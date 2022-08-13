@@ -1,0 +1,724 @@
+---
+title: "UreteroOutcomes"
+output: html_document
+---
+
+```{r setup, include=FALSE}
+knitr::opts_chunk$set(echo = TRUE)
+```
+
+
+```{r Load data and packages, warning=FALSE}
+rm(list=ls(all=TRUE))
+library(dplyr)
+library(lubridate)
+library(ggplot2)
+library(networkD3)
+
+u <- data.table::fread("C:/Users/Courtney/Desktop/UreteroOutcomes/UreteroOutcomes.csv")
+u$record_id <- as.character(u$record_id)
+
+# Exclude people with insufficient records
+exclude <- c("27","32","36","37","38","47","58","62","63","68","69","70","73","75","76","90","95","110","111","118","129","132","134","136","140","141","142","145","146","147","148")
+length(exclude)
+u <- filter(u,!(record_id %in% exclude))
+
+# Label (main) one row per participant
+u <- u %>% mutate(MainRow=ifelse(!is.na(sex),"Y","N"))
+
+# Add columns for was prenatally diagnosed (to all rows)
+pnppl <- unique((u %>% filter(diagnosis_reason___1 == 1))$record_id)
+u <- u %>% mutate(PrenatDiagnosis=ifelse(record_id %in% pnppl,"Y","N"))
+length(pnppl) == nrow(filter(u,MainRow=="Y"& is.na(date_diagnosis))) # make sure two ways of defining it give the same number
+
+# Add column for ever had at least one surgery (to all rows)
+surgppl <- unique((u %>% filter(!is.na(surgery_date)))$record_id)
+u <- u %>% mutate(EverSurg=ifelse(record_id %in% surgppl,"Y","N"))
+
+# Add column for surgery number (for each row that was a surgery)
+surg_num <- filter(u,!is.na(surgery_date)) %>% arrange(record_id,surgery_date) %>% select(record_id,surgery_date)
+surg_num$surgery_number <- ave(surg_num$record_id, surg_num$record_id, FUN=seq_along)
+u <- left_join(u,surg_num,by=c("record_id","surgery_date"))
+
+# Add column for that person's date of first surgery or NA if never had (to all rows)
+firstsurg <- distinct(filter(u,surgery_number=="1") %>% select(record_id,surgery_date)) %>%
+              rename(first_surgery_date=surgery_date)
+u <- left_join(u,firstsurg,by=c("record_id"))
+
+# Add column for preop reflux (to all rows)
+rfppl <- unique(filter(u,EverSurg=="Y" & follow_up_date<first_surgery_date) %>%
+        filter(vur_fu>0|vur_fu_2>0|initial_reflux_status>0|duplex_reflux>0|contra_reflux_grade>0))$record_id
+u <- mutate(u,prereflux=ifelse(record_id %in% rfppl,"Y",ifelse(EverSurg=="Y","N","NA")))
+
+# Add column for postop reflux (to all rows)
+rfppl <- unique(filter(u,EverSurg=="Y" & follow_up_date>first_surgery_date) %>%
+            mutate(temp=first_surgery_date+90) %>% filter(follow_up_date<=temp) %>%
+        filter(vur_fu>0|vur_fu_2>0|initial_reflux_status>0|duplex_reflux>0|contra_reflux_grade>0))$record_id
+u <- mutate(u,postreflux=ifelse(record_id %in% rfppl,"Y",ifelse(EverSurg=="Y","N","NA")))
+
+# Add column for time from diagnosis (birth date if prenatdiag) to first surg (to Main row only)
+dtfs <- filter(u,MainRow=="Y") %>% 
+  mutate(daytofirstsurg=ifelse(PrenatDiagnosis=="Y",ymd(first_surgery_date)-ymd(dob),ymd(first_surgery_date)-ymd(date_diagnosis))) %>% select(record_id,daytofirstsurg)
+u <- left_join(u,dtfs,by=c("record_id"))
+
+# Add column for surg 1 type 1 and for those people, if it was definitive, to all columns
+ppl <- (u %>% filter(surgery_number==1&type_surgery==1))$record_id
+notdef <-  filter(u,record_id %in% ppl&surgery_number==2)$record_id
+u$surg1type1 <- ifelse(u$record_id %in% ppl,"Y","N")
+u$TUIdef <- ifelse(u$record_id %in% ppl & u$record_id %in% notdef,"N",ifelse(u$record_id %in% ppl,"Y","NA"))
+u$TUIdefnum <- as.numeric(ifelse(u$record_id %in% ppl & u$record_id %in% notdef,"0",ifelse(u$record_id %in% ppl,"1","NA")))
+
+# Add column for add at first surg to main row
+as <- filter(u,MainRow=="Y") %>% mutate(agesurg1=as.numeric(ymd(first_surgery_date)-ymd(dob))/365.25)%>% select(record_id,agesurg1)
+u <- left_join(u,as,by=c("record_id"))
+
+```
+
+
+```{r primary TUI surgery dates}
+temp <- filter(u,surg1type1=="Y"&MainRow=="Y")
+ggplot(temp,aes(ymd(first_surgery_date)))+geom_histogram(color="black",binwidth=365.25)+ # binned to bars of 1 year widths
+  labs(x="Date of Primary TUI",y="Count")+theme_classic()
+ggsave("date_primaryTUI_hist.png")
+
+```
+
+```{r Demographics of surg but not primary TUI people}
+
+nonTUIppl <- filter(u,surg1type1=="N"&surgery_number=="1")$record_id
+
+# Breakdown by sex and prenat diagnosis
+filter(u,record_id %in% nonTUIppl & MainRow=="Y") %>% group_by(PrenatDiagnosis) %>% count()
+filter(u,record_id %in% nonTUIppl & MainRow=="Y") %>% group_by(sex) %>% count()
+
+# Time to diagnosis
+temp <- filter(u,record_id %in% nonTUIppl &PrenatDiagnosis=="N"&MainRow=="Y")
+median((temp %>% mutate(diag_age=as.numeric(ymd(date_diagnosis)-ymd(dob))))$diag_age) # days
+mean((temp %>% mutate(diag_age=as.numeric(ymd(date_diagnosis)-ymd(dob))))$diag_age)
+min((temp %>% mutate(diag_age=as.numeric(ymd(date_diagnosis)-ymd(dob))))$diag_age)
+max((temp %>% mutate(diag_age=as.numeric(ymd(date_diagnosis)-ymd(dob))))$diag_age)
+
+# UTI
+ever_uti_nonTUI <- unique(filter(u, record_id %in% nonTUIppl & (diagnosis_reason___2=="1" | reason_imm_surgery___4=="1" | uti=="1" | febrile_uti=="1" | post_op_uti=="1" | repeat_surg_indication=="1" | reason_surgery___4 == "1"))$record_id)
+length(unique(ever_uti_nonTUI))
+
+# Age at first surg for non primary TUI
+median(filter(u,surg1type1=="N"&surgery_number=="1")$agesurg1)
+min(filter(u,surg1type1=="N"&surgery_number=="1")$agesurg1)
+max(filter(u,surg1type1=="N"&surgery_number=="1")$agesurg1)
+mean(filter(u,surg1type1=="N"&surgery_number=="1")$agesurg1)
+
+```
+
+```{r Demongraphics of nonsurg people}
+
+# Breakdown by sex and prenat diagnosis
+filter(u,EverSurg=="N"&MainRow=="Y") %>% group_by(PrenatDiagnosis) %>% count()
+filter(u,EverSurg=="N"&MainRow=="Y") %>% group_by(sex) %>% count()
+
+# Time to diagnosis
+temp <- filter(u,EverSurg=="N"&PrenatDiagnosis=="N"&MainRow=="Y")
+median((temp %>% mutate(diag_age=as.numeric(ymd(date_diagnosis)-ymd(dob))))$diag_age) # days
+mean((temp %>% mutate(diag_age=as.numeric(ymd(date_diagnosis)-ymd(dob))))$diag_age)
+min((temp %>% mutate(diag_age=as.numeric(ymd(date_diagnosis)-ymd(dob))))$diag_age)
+max((temp %>% mutate(diag_age=as.numeric(ymd(date_diagnosis)-ymd(dob))))$diag_age)
+
+# UTI
+non_surg_ppl <- filter(u,EverSurg=="N"&MainRow=="Y")$record_id
+ever_uti_nonsurg <- unique(filter(u, record_id %in% non_surg_ppl & (diagnosis_reason___2=="1" | uti=="1" | febrile_uti=="1"))$record_id)
+
+```
+
+
+```{r Med Summary Stats}
+# How many were prenatally diagnosed?
+nrow(filter(u,MainRow=="Y") %>% filter(PrenatDiagnosis=="Y"))
+
+# How many had at least one surgery performed?
+nrow(filter(u,MainRow=="Y") %>% filter(EverSurg=="Y"))
+
+# What sides of ureteroceles?
+filter(u,MainRow=="Y") %>% group_by(kidney_with_ureterocele) %>% count()
+
+# What types of ureteroceles did ppl have?
+filter(u,MainRow=="Y") %>% group_by(ureterocele_pole) %>% count()
+filter(u,MainRow=="Y") %>% group_by(ureterocele_site) %>% count()
+u_types <- filter(u,MainRow=="Y") %>% group_by(kidney_with_ureterocele,ureterocele_pole,ureterocele_site) %>% count()
+write.table(u_types,"C:/Users/Courtney/Desktop/UreteroOutcomes/ureterotypes.tsv", quote=F, sep="\t", row.names=F, col.names=T)
+
+# How many who had surgery needed additional surgery
+length(unique(filter(u,surgery_number=="2")$record_id)) # had 2 or more
+length(unique(filter(u,surgery_number=="3")$record_id)) # had 3
+
+# How many unique individuals had UTI directly after surgery at least once?
+length(unique((u %>% filter(post_op_uti=="1"))$record_id))
+
+# Average time of followup for all
+avgfu <- filter(u,PrenatDiagnosis=="Y"&MainRow=="Y") %>% select(record_id,dob,date_visit_4)
+avgfu <- avgfu %>% mutate(fu=ymd(date_visit_4)-ymd(dob)) %>% select(record_id,fu)
+temp <- filter(u,PrenatDiagnosis=="N") %>% select(record_id,follow_up_date) %>% arrange(follow_up_date) %>% group_by(record_id) %>% filter(1:n() == 1)
+
+# Avg time followup for type 1 surg 1 after first surg
+ppl <- (u %>% filter(surgery_number==1&type_surgery==1))$record_id
+temp <-  filter(u,record_id %in% ppl & MainRow=="Y") %>% select(record_id,first_surgery_date,date_visit_4)
+temp <- temp %>% mutate(fu=ymd(date_visit_4)-ymd(first_surgery_date))
+temp %>% summarize(meanfu=mean(fu),medfu=median(fu),sdfu=sd(fu),rangefu=range(fu))
+
+# How many type 1 surg 1 had post op uti for that  & other than those how many had a febrile uti at some point after
+pou <- unique((u %>% filter(surgery_number==1&type_surgery==1  & post_op_uti=="1"))$record_id)
+length(pou)
+ppl <- (u %>% filter(surgery_number==1&type_surgery==1))$record_id
+length(unique(filter(u,record_id %in% ppl & follow_up_date>first_surgery_date & febrile_uti==1 & !(record_id %in% pou))$record_id))
+
+########### SURG 1 TYPE 1
+
+# Age at first surg for type 1 surg1
+s <- filter(u,MainRow=="Y"&surg1type1=="Y")
+median(s$agesurg1)
+mean(s$agesurg1)
+sd(s$agesurg1)
+min(s$agesurg1)
+max(s$agesurg1)
+
+# Fraction prenatally diagnosed type1 surg1
+table(s %>% select(PrenatDiagnosis))
+
+# How many diagnosed because of UTIs
+table(s %>% select(diagnosis_reason___2))
+
+# How many incidental diagnosed (but not prenat diagnosed)
+nrow(s %>% filter(diagnosis_reason___4=="1"&diagnosis_reason___1=="0"))
+
+# Avg age diagnosis for non prenatally diagnosed type1 surg1
+a <- filter(s,PrenatDiagnosis=="N") %>% select(record_id,dob,date_diagnosis)
+a <- a %>% mutate(Age_Diagnosis=as.numeric((ymd(a$date_diagnosis)-ymd(a$dob))))
+mean(na.omit(a$Age_Diagnosis))/365.25
+median(na.omit(a$Age_Diagnosis))/365.25 
+sd(na.omit(a$Age_Diagnosis))/365.25
+min(na.omit(a$Age_Diagnosis))/365.25
+max(na.omit(a$Age_Diagnosis))/365.25
+
+# How many operated at first visit Surg 1 type 1
+nrow(s %>% filter(treatment_plan=="1"))
+
+# How many each side ureterocele surg1 type`
+s %>% group_by(kidney_with_ureterocele) %>% count()
+
+# Avg num of followups
+ppl <- (u %>% filter(surgery_number==1&type_surgery==1))$record_id
+n <- (filter(u,record_id %in% ppl) %>% group_by(record_id) %>% count())$n
+summary(n)
+
+```
+
+```{r Surgery type}
+
+# For each surgery number (first surgery, second, or third surgery) what was the breakdown of each surgery type?
+surg_num_bkd <- u %>% group_by(surgery_number,type_surgery) %>% count()
+surg_num_bkd
+write.table(surg_num_bkd,"C:/Users/Courtney/Desktop/UreteroOutcomes/surgtypebreakdown.tsv", quote=F, sep="\t", row.names=F, col.names=T)
+
+# How many people had surgery type 1 on first surgery then had a second surgery
+ppl <- unique(filter(u,surgery_number=="1"&type_surgery=="1")$record_id)
+filter(u,record_id %in% ppl & surgery_number=="2")
+
+# What was the surgery info (for all of their surgeries) for people who had 3 surgeries
+ppl <- unique(filter(u,surgery_number=="3")$record_id)
+three_surg <- filter(u,record_id %in% ppl & !is.na(surgery_date)) %>% select(record_id,surgery_number,type_surgery,surgery_date)
+three_surg
+write.table(three_surg,"C:/Users/Courtney/Desktop/UreteroOutcomes/threesurgtypebreakdown.tsv", quote=F, sep="\t", row.names=F, col.names=T)
+
+# Is there an association with the surgery type of a first surgery (had type 1 vs not type 1) and the need to have additional?
+nottype1 <- data.frame(record_id=unique(filter(u,surgery_number=="1"&type_surgery!="1")$record_id))
+type1 <- data.frame(record_id=unique(filter(u,surgery_number=="1"&type_surgery=="1")$record_id))
+nottype1hadmultisurg <- right_join(u,nottype1,by=c("record_id")) %>% filter(surgery_number=="2")
+type1hadmultisurg <- right_join(u,type1,by=c("record_id")) %>% filter(surgery_number=="2")
+
+df <- data.frame("needed extra surg" = c(nrow(type1hadmultisurg), nrow(nottype1hadmultisurg)), "didn't need extra surg" = c(nrow(type1) - nrow(type1hadmultisurg), nrow(nottype1) - nrow(nottype1hadmultisurg)), row.names = c("surg num1 type 1", "surg num1 type not 1"))
+df
+fisher.test(df,alternative="greater") # was this enriched relative to expected
+
+```
+
+```{r UTI timing relative to surg}
+# Of the patients who had a UTI and underwent a surgery, how many had their first UTI before surgery and how many after?
+surg_ppl <- unique(filter(u,EverSurg=="Y")$record_id)
+
+# BEFORE
+tempsurg <- u %>% filter(!is.na(surgery_date)) %>% arrange(record_id,surgery_date) %>% group_by(record_id) %>% filter(row_number()==1) %>% select(record_id,surgery_date)  # earliest surg
+tempfu <- u %>% filter(febrile_uti=="1"|uti=="1") %>% arrange(record_id,follow_up_date) %>% group_by(record_id) %>% filter(row_number()==1) %>% select(record_id,follow_up_date)  # earliest followup w uti
+temp <- right_join(tempsurg,tempfu,by=c("record_id"))
+crit3ppl <- unique(filter(temp,follow_up_date<surgery_date)$record_id)
+before <- filter(u, record_id %in% surg_ppl & (diagnosis_reason___2=="1" | reason_imm_surgery___4=="1" | record_id %in% crit3ppl))
+length(unique(before$record_id)) # num people before
+
+# AFTER
+ever_uti_surg <- unique(filter(u, record_id %in% surg_ppl & (diagnosis_reason___2=="1" | reason_imm_surgery___4=="1" | uti=="1" | febrile_uti=="1" | post_op_uti=="1" | repeat_surg_indication=="1" | reason_surgery___4 == "1"))$record_id)
+aftersurg <- unique(setdiff(ever_uti_surg,unique(before$record_id)))
+length(aftersurg) # had uti after surg
+
+u_full <- u %>% mutate(firstUTIbeforesurg=ifelse(record_id %in% unique(before$record_id),"Y","N"))
+u_full <- u_full %>% mutate(firstUTIaftersurg=ifelse(record_id %in% aftersurg,"Y","N"))
+u_full <- u_full %>% mutate(EverUTI=ifelse(record_id %in% ever_uti_surg,"Y","N"))
+
+```
+
+```{r Age and Type of Diagnosis for non-PrenatDiagnosis}
+# Average age at diagnosis if not prenatally diagnosed
+a <- filter(u,MainRow=="Y"&PrenatDiagnosis=="N") %>% select(record_id,dob,date_diagnosis)
+a <- a %>% mutate(Age_Diagnosis=as.numeric((ymd(a$date_diagnosis)-ymd(a$dob))))
+mean(na.omit(a$Age_Diagnosis)) # 412 days
+median(na.omit(a$Age_Diagnosis)) # 68 days
+ggplot(a,aes(x=Age_Diagnosis)) + geom_histogram(color="black", fill="white",binwidth=15) +
+  geom_vline(aes(xintercept=mean(Age_Diagnosis)),
+             color="blue", linetype="dashed", size=1)+
+ geom_vline(aes(xintercept=median(Age_Diagnosis)),
+          color="red", linetype="dashed", size=1)+
+  labs(x="Average Age of Diagnosis (Days)",y="Number") + theme_classic()
+ggsave("C:/Users/Courtney/Desktop/UreteroOutcomes/age_diagnosis15.png")
+
+## How were people who were not prenatally diagnosed most frequently diagnosed?
+# num individuals diagnosis_reason___2: 13 total, and of these 13 two are just diagnosis_reason___2 and diagnosis_reason___4, and one is diagnosis_reason___2 and diagnosis_reason___4 and diagnosis_reason___99
+filter(u,MainRow=="Y"&PrenatDiagnosis=="N") %>% select(matches("diagnosis_reason")) %>% filter(diagnosis_reason___2=="1")
+# num individuals diagnosis_reason___3: 2 total, one of these is diagnosis_reason___3 and diagnosis_reason___4 and one of these is diagnosis_reason___3 and diagnosis_reason___99
+filter(u,MainRow=="Y"&PrenatDiagnosis=="N") %>% select(matches("diagnosis_reason")) %>% filter(diagnosis_reason___3=="1")
+# num individuals only diagnosis_reason___4: 43 total, of these 18 are also diagnosis_reason___99
+filter(u,MainRow=="Y"&PrenatDiagnosis=="N") %>% select(matches("diagnosis_reason")) %>% filter(diagnosis_reason___4=="1"&diagnosis_reason___1=="0"&diagnosis_reason___2=="0"&diagnosis_reason___3=="0")
+filter(u,MainRow=="Y"&PrenatDiagnosis=="N") %>% select(matches("diagnosis_reason")) %>% filter(diagnosis_reason___4=="1"&diagnosis_reason___99=="1"&diagnosis_reason___1=="0"&diagnosis_reason___2=="0"&diagnosis_reason___3=="0")
+# num individuals with diagnosis_reason___98: 0
+filter(u,MainRow=="Y"&PrenatDiagnosis=="N") %>% select(matches("diagnosis_reason")) %>% filter(diagnosis_reason___98=="1")
+# num individuals just diagnosis_reason___99: 3
+filter(u,MainRow=="Y"&PrenatDiagnosis=="N") %>% select(matches("diagnosis_reason")) %>% filter(diagnosis_reason___4=="0"&diagnosis_reason___1=="0"&diagnosis_reason___2=="0"&diagnosis_reason___3=="0"&diagnosis_reason___99=="1")
+
+```
+
+```{r Overall UTI}
+
+# What fraction of people that had a UTI directly after their first surgery then went on to have at least one more: 1/2
+multsurg <- filter(u,surgery_number==2)$record_id
+length(unique((u %>% filter(post_op_uti=="1",record_id %in% multsurg))$record_id))/length(unique((u %>% filter(post_op_uti=="1"))$record_id))
+matrix(c(4,8-4,26-4,86-8), nrow=2)
+fisher.test(matrix(c(4,8-4,26-4,86-8), nrow=2)) # was this enriched relative to expected; odds ratio 3.5, P-value 0.09
+
+# How many people who had at least one surgery ever had a UTI and is this enriched relative to those who never had surgery
+surg <- unique((filter(u,EverSurg=="Y")$record_id))
+nosurg <- setdiff(unique((filter(u,is.na(surgery_date))$record_id)),surg)
+surg_uti <- filter(u,record_id %in% surg & (post_op_uti=="1"|febrile_uti=="1"|uti=="1")) %>% select(record_id,surgery_date,matches("uti"))
+length(unique(surg_uti$record_id)) # 47
+nosurg_uti <- filter(u,record_id %in% nosurg & (post_op_uti=="1"|febrile_uti=="1"|uti=="1")) %>% select(record_id,surgery_date,matches("uti"))
+length(unique(nosurg_uti$record_id)) # 7
+matrix(c(47,86-47,47+7-47,123-86), nrow=2)
+fisher.test(matrix(c(47,86-47,47+7-47,123-86), nrow=2)) # was this enriched relative to expected; 6.3 odds ratio, P-value 2.5e-5
+
+# What is the average number of UTIs (total and by surg or nosurg)
+surg_uti_stat <- as.data.frame(filter(u,record_id %in% surg) %>% group_by(record_id) %>% count())
+surg_uti_stat %>% summarize(mean(n),median(n),sd(n)) # 10.9,10,5.3
+nosurg_uti_stat <- as.data.frame(filter(u,record_id %in% nosurg) %>% group_by(record_id) %>% count())
+nosurg_uti_stat %>% summarize(mean_n=mean(n),median_n=median(n),sd_n=sd(n)) # 6.2,5,2.8
+uti_stat <- bind_rows(surg_uti_stat %>% mutate(Surg=as.factor("Yes")),nosurg_uti_stat %>% mutate(Surg=as.factor("No")))
+ggplot(uti_stat,aes(Surg,n))+geom_violin(trim=FALSE,aes(fill=Surg))+
+  labs(x="Individual Ever Had Surgery?",y="Number of UTIs")+
+  scale_fill_manual(values=c("purple", "#E69F00"))+geom_boxplot(width=0.1)+theme_classic()
+ggsave("C:/Users/Courtney/Desktop/UreteroOutcomes/uti_bysurg.png")
+```
+
+```{r Prenat Diagnosis Surg Outcomes}
+
+# Is a prenatal diagnosis more likely than diagnosis at a later date: undergoing at least one surgery
+notprenat <- data.frame(record_id=unique(filter(u,PrenatDiagnosis=="N")$record_id))
+prenat <- data.frame(record_id=unique(filter(u,PrenatDiagnosis=="Y")$record_id))
+notprenathadsurg <- unique((right_join(u,notprenat,by=c("record_id")) %>% filter(EverSurg=="Y"))$record_id)
+prenathadsurg <- unique((right_join(u,prenat,by=c("record_id")) %>% filter(EverSurg=="Y"))$record_id)
+
+df <- data.frame("Had at least one surgery" = c(length(prenathadsurg), length(notprenathadsurg)), "Didn't need surg" = c(nrow(prenat) - length(prenathadsurg), nrow(notprenat) - length(notprenathadsurg)), row.names = c("Prenatally Diagnosed", "Not Prenatally Diagnosed"))
+df
+fisher.test(df) # was this enriched relative to expected
+
+# For patients who underwent surgery, was a prenatal diagnosis more likely than diagnosis at a later date to need more than one surgery?
+notprenatsurg <- data.frame(record_id=unique(filter(u,PrenatDiagnosis=="N"&EverSurg=="Y")$record_id))
+prenatsurg <- data.frame(record_id=unique(filter(u,PrenatDiagnosis=="Y"&EverSurg=="Y")$record_id))
+notprenatmultisurg <- unique((right_join(u,notprenatsurg,by=c("record_id")) %>% filter(surgery_number=="2"))$record_id)
+prenatmultisurg <- unique((right_join(u,prenatsurg,by=c("record_id")) %>% filter(surgery_number=="2"))$record_id)
+
+df <- data.frame("Had multi surgery" = c(length(prenatmultisurg), length(notprenatmultisurg)), "Only one surg" = c(nrow(prenatsurg) - length(prenatmultisurg), nrow(notprenatsurg) - length(notprenatmultisurg)), row.names = c("Prenatally Diagnosed", "Not Prenatally Diagnosed"))
+df
+fisher.test(df) # was this enriched relative to expected
+
+# For primary tui patients who underwent surgery, was a prenatal diagnosis more likely than diagnosis at a later date to need more than one surgery?
+notprenattui <- data.frame(record_id=unique(filter(u,PrenatDiagnosis=="N"&surg1type1=="Y")$record_id))
+prenattui <- data.frame(record_id=unique(filter(u,PrenatDiagnosis=="Y"&surg1type1=="Y")$record_id))
+notprenatmultisurg <- unique((right_join(u,notprenattui,by=c("record_id")) %>% filter(surgery_number=="2"))$record_id)
+prenatmultisurg <- unique((right_join(u,prenattui,by=c("record_id")) %>% filter(surgery_number=="2"))$record_id)
+
+df <- data.frame("Had multi surgery" = c(length(prenatmultisurg), length(notprenatmultisurg)), "Only primary TUI" = c(nrow(prenattui) - length(prenatmultisurg), nrow(notprenattui) - length(notprenatmultisurg)), row.names = c("Prenatally Diagnosed", "Not Prenatally Diagnosed"))
+df
+fisher.test(df) # was this enriched relative to expected
+
+```
+
+```{r Time Diagnosis to Surg Outcomes}
+# Note: for the below, set diagnosis date to date of birth for prenat diagnosed
+
+# Is a greater time difference between diagnosis and first surgery significantly related to undergoing additional surgeries?
+multisurg <- unique(filter(u,surgery_number=="2")$record_id)
+temp <- u %>% filter(MainRow=="Y"&EverSurg=="Y") %>% mutate(MultiSurg=ifelse(record_id %in% multisurg,"Yes","No"))
+ggplot(temp,aes(x=MultiSurg,y=daytofirstsurg))+geom_violin(trim=FALSE,aes(fill=MultiSurg))+
+  labs(x="Individual Had Multiple Surgeries?",y="Days To First Surgery From Diagnosis")+
+  scale_fill_manual(values=c("purple", "#E69F00", "blue"))+geom_boxplot(width=0.1)+theme_classic()
+ggsave("C:/Users/Courtney/Desktop/UreteroOutcomes/multisurg_timetosurg.png")
+t.test(filter(temp,MultiSurg=="Yes")$daytofirstsurg, filter(temp,MultiSurg=="No")$daytofirstsurg, var.equal = TRUE) # need to confirm assumptions for this t test anyway
+
+# Is a greater time difference between diagnosis and first surgery significantly related to UTI after first surg
+temp <- filter(u_full,MainRow=="Y")
+ggplot(temp,aes(x=firstUTIaftersurg,y=daytofirstsurg))+geom_violin(trim=FALSE,aes(fill=firstUTIaftersurg))+
+  labs(x="Individual Had Any UTI after First Surgery?",y="Days To First Surgery From Diagnosis")+
+  scale_fill_manual(values=c("purple", "#E69F00", "blue"))+geom_boxplot(width=0.1)+theme_classic()
+ggsave("C:/Users/Courtney/Desktop/UreteroOutcomes/uti_timetosurg.png")
+t.test(filter(temp,firstUTIaftersurg=="Y")$daytofirstsurg, filter(temp,firstUTIaftersurg=="N")$daytofirstsurg, var.equal = TRUE) # need to confirm assumptions for this t test anyway
+
+
+```
+
+```{r Reflux Outcomes}
+newrefluxppl <- filter(u,MainRow=="Y"&prereflux=="N"&postreflux=="Y")$record_id
+
+# For patients who underwent surgery, was a prenatal diagnosis more likely than diagnosis at a later date to develop NEW reflux within 3 months after surgery
+notprenat <- data.frame(record_id=unique(filter(u,PrenatDiagnosis=="N")$record_id))
+prenat <- data.frame(record_id=unique(filter(u,PrenatDiagnosis=="Y")$record_id))
+notprenatreflux <- unique((right_join(u,notprenat,by=c("record_id")) %>% filter(record_id %in% newrefluxppl))$record_id)
+prenatreflux <- unique((right_join(u,prenat,by=c("record_id")) %>% filter(record_id %in% newrefluxppl))$record_id)
+
+df <- data.frame("Had New Reflux" = c(length(prenatreflux), length(notprenatreflux)), "Didn't Have New Reflux" = c(nrow(prenat) - length(prenatreflux), nrow(notprenat) - length(notprenatreflux)), row.names = c("Prenatally Diagnosed", "Not Prenatally Diagnosed"))
+df
+fisher.test(df) # was this enriched relative to expected
+
+# Is a greater time difference between diagnosis and first surgery significantly related to developing NEW reflux within 3 months after surgery
+temp <- filter(u,MainRow=="Y") %>% mutate(Reflux=paste0("pre:",prereflux,"_post:",postreflux))
+ggplot(temp,aes(x=Reflux,y=daytofirstsurg))+geom_violin(trim=FALSE,aes(fill=Reflux))+
+  labs(x="Reflux?",y="Days To First Surgery From Diagnosis")+
+  scale_fill_manual(values=c("purple", "#E69F00", "blue"))+geom_boxplot(width=0.1)+theme_classic()
+ggsave("C:/Users/Courtney/Desktop/UreteroOutcomes/reflux_timetosurg.png")
+
+t.test(filter(temp,Reflux=="pre:N_post:Y")$daytofirstsurg, filter(temp,Reflux=="pre:N_post:N")$daytofirstsurg, var.equal = TRUE) # need to confirm assumptions for this t test anyway
+
+t.test(filter(temp,Reflux=="pre:N_post:Y")$daytofirstsurg, filter(temp,Reflux!="pre:N_post:Y")$daytofirstsurg, var.equal = TRUE) # need to confirm assumptions for this t test anyway
+
+t.test(filter(temp,Reflux=="pre:N_post:N")$daytofirstsurg, filter(temp,Reflux!="pre:N_post:N")$daytofirstsurg, var.equal = TRUE) # need to confirm assumptions for this t test anyway
+
+t.test(filter(temp,prereflux=="N")$daytofirstsurg, filter(temp,prereflux=="Y")$daytofirstsurg, var.equal = TRUE) # need to confirm assumptions for this t test anyway
+```
+
+```{r Antibiotics}
+one <- unique(filter(u,antibiotics=="1")$record_id)
+zero <- unique(filter(u,antibiotics=="0")$record_id)
+zero <- setdiff(zero,one)
+
+t.test(filter(u,record_id %in% one & MainRow=="Y")$daytofirstsurg,filter(u,record_id %in% zero & MainRow=="Y")$daytofirstsurg)
+
+onehadsurg <- filter(u,MainRow=="Y" & record_id %in% one & EverSurg=="Y")$record_id
+zerohadsurg <- filter(u,MainRow=="Y" & record_id %in% zero & EverSurg=="Y")$record_id
+
+df <- data.frame("Had at least one surgery" = c(length(zerohadsurg), length(onehadsurg)), "Didn't need surg" = c(length(zero) - length(zerohadsurg), length(one) - length(onehadsurg)), row.names = c("Antibiotics at least one 1", "Antibiotics only ever 0"))
+df
+fisher.test(df) # was this enriched relative to expected
+
+# How many people have a followup within 90 days of first surgery
+length(unique(filter(u,follow_up_date>first_surgery_date&follow_up_date<first_surgery_date+90)$record_id))
+
+### For had type 1 as first surg people
+# How many people have a followup within 90 days of first surgery
+type1firstsurgppl <- unique(filter(u,surgery_number=="1"&type_surgery=="1")$record_id)
+length(unique(filter(u,record_id %in% type1firstsurgppl & follow_up_date>first_surgery_date&follow_up_date<first_surgery_date+90)$record_id))
+# How many had more than 1 followup within 90 days 
+filter(u,record_id %in% type1firstsurgppl & follow_up_date>first_surgery_date&follow_up_date<first_surgery_date+90) %>% group_by(record_id) %>% count() %>% arrange(-n) %>% filter(n>1)
+
+# did anyone with multiple followups within 90 days have dif antibiotic status in the followups (if no then can just filter to one visit per person and count from there for next step)
+distinct(filter(u,record_id %in% type1firstsurgppl & follow_up_date>first_surgery_date&follow_up_date<first_surgery_date+90) %>% select(record_id,antibiotics)) %>% group_by(record_id) %>% count() %>% filter(n>1)
+# note: record_id==20 had one followup on antibiotics and one not so will count that as on because was on at least once within 90 days after first surg
+
+# What frac of people were on antibiotics within 90 days of first surg
+distinct(filter(u,record_id %in% type1firstsurgppl & follow_up_date>first_surgery_date&follow_up_date<first_surgery_date+90) %>% select(record_id,antibiotics)) %>% filter(!(record_id=="20" & antibiotics=="0")) %>% group_by(antibiotics) %>% count() %>% filter(n>1)
+
+# Who were the 4 not on antibiotics and was TUI definitive for them vs abx ppl
+notabx<-(distinct(filter(u,record_id %in% type1firstsurgppl & follow_up_date>first_surgery_date&follow_up_date<first_surgery_date+90) %>% select(record_id,antibiotics)) %>% filter(!(record_id=="20" & antibiotics=="0"))  %>% filter(antibiotics=="0"))$record_id
+nrow(filter(u,record_id %in% notabx & surgery_number=="2"))
+abx<-(distinct(filter(u,record_id %in% type1firstsurgppl & follow_up_date>first_surgery_date&follow_up_date<first_surgery_date+90) %>% select(record_id,antibiotics)) %>% filter(!(record_id=="20" & antibiotics=="0"))  %>% filter(antibiotics=="1"))$record_id
+nrow(filter(u,record_id %in% abx & surgery_number=="2"))
+
+### For had type 1 as first surg people
+# How many people have a followup within 365 days of first surgery
+numdays=365
+type1firstsurgppl <- unique(filter(u,surgery_number=="1"&type_surgery=="1")$record_id)
+length(unique(filter(u,record_id %in% type1firstsurgppl & follow_up_date>first_surgery_date&follow_up_date<first_surgery_date+numdays)$record_id))
+# How many had more than 1 followup within 365 days 
+filter(u,record_id %in% type1firstsurgppl & follow_up_date>first_surgery_date&follow_up_date<first_surgery_date+numdays) %>% group_by(record_id) %>% count() %>% arrange(-n) %>% filter(n>1)
+
+# did anyone with multiple followups within 365 days have dif antibiotic status in the followups (if no then can just filter to one visit per person and count from there for next step)
+multi <- (distinct(filter(u,record_id %in% type1firstsurgppl & follow_up_date>first_surgery_date&follow_up_date<first_surgery_date+numdays) %>% select(record_id,antibiotics)) %>% group_by(record_id) %>% count() %>% filter(n>1))$record_id
+# if anyone has multiple then based on how it's coded at least one was on antibiotic, so count them as yes antibiotic
+
+# What frac of people were on antibiotics within 365 days of first surg
+distinct(filter(u,record_id %in% type1firstsurgppl & follow_up_date>first_surgery_date&follow_up_date<first_surgery_date+numdays) %>% select(record_id,antibiotics)) %>% filter(!(record_id %in% multi & antibiotics=="0")) %>% group_by(antibiotics) %>% count() %>% filter(n>1)
+
+# How many within first year of surg had an appointment where they werent on antibiotics
+noan <- unique(((distinct(filter(u,record_id %in% type1firstsurgppl & follow_up_date>first_surgery_date&follow_up_date<first_surgery_date+numdays) %>% select(record_id,antibiotics))) %>% filter(antibiotics=="0"))$record_id)
+
+# How many people never had a followup where they were on antibiotics in the first year
+anti <- setdiff(type1firstsurgppl,unique(((distinct(filter(u,record_id %in% type1firstsurgppl & follow_up_date>first_surgery_date&follow_up_date<first_surgery_date+numdays) %>% select(record_id,antibiotics))) %>% filter(antibiotics=="1"))$record_id))
+
+# How many had an appointment where they discontinued antibiotics within first year of surg
+dis <- unique((distinct(filter(u,record_id %in% type1firstsurgppl & follow_up_date>first_surgery_date&follow_up_date<first_surgery_date+numdays) %>% select(record_id,antibiotics,antibiotics_end)) %>% filter(antibiotics_end=="3"))$record_id)
+
+intersect(noan,anti) # 3 people had no followups in first year, 3 had at least one followup where they were not on antibiotics in first year and no followups where were on antibiotics in first year, 13 had at least one followup where were not on antibiotics in first year and at least one followup where was on antibiotics in first year
+
+setdiff(dis,noan) # 5 people had an appointment where they discontinued antibiotics within first year of surg that didnt also have an appointment where they were off antibiotics (8 others also had appointment where discontinued them but they also had an appointment where were off antibiotics so they are already counted in that number)
+```
+
+```{r Prenat Diagnosis}
+
+# Relationship between day to first surgery and prenatally diagnosed
+ppl1 <- unique(filter(u,PrenatDiagnosis=="Y")$record_id)
+ppl2 <- unique(filter(u,PrenatDiagnosis=="N")$record_id)
+
+t.test(filter(u,record_id %in% ppl1 & MainRow=="Y")$daytofirstsurg,filter(u,record_id %in% ppl2 & MainRow=="Y")$daytofirstsurg)
+
+# Associations for prenatal diagnosis with ever having surgery
+ppl1didx <- filter(u,MainRow=="Y" & record_id %in% ppl1 & EverSurg=="Y")$record_id
+ppl2didx <- filter(u,MainRow=="Y" & record_id %in% ppl2 & EverSurg=="Y")$record_id
+
+df <- data.frame("Did X" = c(length(ppl2didx), length(ppl1didx)), "Didn't X" = c(length(ppl2) - length(ppl2didx), length(ppl1) - length(ppl1didx)), row.names = c("People 1", "People 2"))
+df
+fisher.test(df) # was this enriched relative to expected
+```
+
+```{r surgery type 1}
+type1firstsurgppl <- unique(filter(u,surgery_number=="1"&type_surgery=="1")$record_id)
+
+## Things associated with multiple surg for ppl who had surg type 1 on their 1st
+ppl1 <- unique(filter(u,record_id %in% type1firstsurgppl & surgery_number=="2")$record_id)
+ppl2 <- setdiff(type1firstsurgppl,ppl1)
+
+## ureteropole 1
+ppl1didx <- filter(u,MainRow=="Y" & record_id %in% ppl1 & ureterocele_pole=="1")$record_id
+ppl2didx <- filter(u,MainRow=="Y" & record_id %in% ppl2 & ureterocele_pole=="1")$record_id
+
+df <- data.frame("U pole 1" = c(length(ppl2didx), length(ppl1didx)), "Not U pole 1" = c(length(ppl2) - length(ppl2didx), length(ppl1) - length(ppl1didx)), row.names = c("Surg 1 Type 1 had 1 surg", "Surg 1 Type 1 had > 1 surg"))
+df
+fisher.test(df, alternative = "greater") # was this enriched relative to expected
+
+## ureteropole site
+ppl1didx <- filter(u,MainRow=="Y" & record_id %in% ppl1 & ureterocele_site=="1")$record_id
+ppl2didx <- filter(u,MainRow=="Y" & record_id %in% ppl2 & ureterocele_site=="1")$record_id
+
+df <- data.frame("U Site 1" = c(length(ppl2didx), length(ppl1didx)), "Not U Site 1" = c(length(ppl2) - length(ppl2didx), length(ppl1) - length(ppl1didx)), row.names = c("Surg 1 Type 1 had 1 surg", "Surg 1 Type 1 had > 1 surg"))
+df
+fisher.test(df, alternative = "greater") # was this enriched relative to expected
+
+## prereflux
+ppl1didx <- filter(u,MainRow=="Y" & record_id %in% ppl1 & prereflux=="N")$record_id
+ppl2didx <- filter(u,MainRow=="Y" & record_id %in% ppl2 & prereflux=="N")$record_id
+
+df <- data.frame("Preop reflux == N" = c(length(ppl2didx), length(ppl1didx)), "Not Preop reflux == N" = c(length(ppl2) - length(ppl2didx), length(ppl1) - length(ppl1didx)), row.names = c("Surg 1 Type 1 had 1 surg", "Surg 1 Type 1 had > 1 surg"))
+df
+fisher.test(df) # was this enriched relative to expected
+
+## proph_abx
+ppl1didx <- filter(u,MainRow=="Y" & record_id %in% ppl1 & proph_abx=="1")$record_id
+ppl2didx <- filter(u,MainRow=="Y" & record_id %in% ppl2 & proph_abx=="1")$record_id
+
+df <- data.frame("proph_abx 1" = c(length(ppl2didx), length(ppl1didx)), "Not proph_abx 1" = c(length(ppl2) - length(ppl2didx), length(ppl1) - length(ppl1didx)), row.names = c("Surg 1 Type 1 had 1 surg", "Surg 1 Type 1 had > 1 surg"))
+df
+fisher.test(df) # was this enriched relative to expected
+
+## sex
+ppl1didx <- filter(u,MainRow=="Y" & record_id %in% ppl1 & sex=="1")$record_id
+ppl2didx <- filter(u,MainRow=="Y" & record_id %in% ppl2 & sex=="1")$record_id
+
+df <- data.frame("sex 1" = c(length(ppl2didx), length(ppl1didx)), "Not sex 1" = c(length(ppl2) - length(ppl2didx), length(ppl1) - length(ppl1didx)), row.names = c("Surg 1 Type 1 had 1 surg", "Surg 1 Type 1 had > 1 surg"))
+df
+fisher.test(df) # was this enriched relative to expected
+
+## diagnosis_reason___1
+ppl1didx <- filter(u,MainRow=="Y" & record_id %in% ppl1 & diagnosis_reason___1=="1")$record_id
+ppl2didx <- filter(u,MainRow=="Y" & record_id %in% ppl2 & diagnosis_reason___1=="1")$record_id
+
+df <- data.frame("diagnosis_reason___1 1" = c(length(ppl2didx), length(ppl1didx)), "Not diagnosis_reason___1 1" = c(length(ppl2) - length(ppl2didx), length(ppl1) - length(ppl1didx)), row.names = c("Surg 1 Type 1 had 1 surg", "Surg 1 Type 1 had > 1 surg"))
+df
+fisher.test(df) # was this enriched relative to expected
+
+## First UTI preop
+ppl1didx <- filter(u_full,MainRow=="Y" & record_id %in% ppl1 & firstUTIbeforesurg=="Y")$record_id
+ppl2didx <- filter(u_full,MainRow=="Y" & record_id %in% ppl2 & firstUTIbeforesurg=="Y")$record_id
+
+df <- data.frame("firstUTIbeforesurg" = c(length(ppl2didx), length(ppl1didx)), "Not firstUTIbeforesurg" = c(length(ppl2) - length(ppl2didx), length(ppl1) - length(ppl1didx)), row.names = c("Surg 1 Type 1 had 1 surg", "Surg 1 Type 1 had > 1 surg"))
+df
+fisher.test(df) # was this enriched relative to expected
+
+# EverUTI
+ppl1didx <- filter(u_full,MainRow=="Y" & record_id %in% ppl1 & EverUTI=="Y")$record_id
+ppl2didx <- filter(u_full,MainRow=="Y" & record_id %in% ppl2 & EverUTI=="Y")$record_id
+
+df <- data.frame("EverUTI" = c(length(ppl2didx), length(ppl1didx)), "Not EverUTI" = c(length(ppl2) - length(ppl2didx), length(ppl1) - length(ppl1didx)), row.names = c("Surg 1 Type 1 had 1 surg", "Surg 1 Type 1 had > 1 surg"))
+df
+fisher.test(df,alternative = "less") # was this enriched relative to expected
+
+# First UTI postop
+ppl1didx <- filter(u_full,MainRow=="Y" & record_id %in% ppl1 & firstUTIaftersurg=="Y")$record_id
+ppl2didx <- filter(u_full,MainRow=="Y" & record_id %in% ppl2 & firstUTIaftersurg=="Y")$record_id
+
+df <- data.frame("firstUTIaftersurg" = c(length(ppl2didx), length(ppl1didx)), "Not firstUTIaftersurg" = c(length(ppl2) - length(ppl2didx), length(ppl1) - length(ppl1didx)), row.names = c("Surg 1 Type 1 had 1 surg", "Surg 1 Type 1 had > 1 surg"))
+df
+fisher.test(df,alternative="less") # was this enriched relative to expected
+
+# kidney_with_ureterocele
+ppl1didx <- filter(u,MainRow=="Y" & record_id %in% ppl1 & kidney_with_ureterocele=="3")$record_id
+ppl2didx <- filter(u,MainRow=="Y" & record_id %in% ppl2 & kidney_with_ureterocele=="3")$record_id
+
+df <- data.frame("kidney_with_ureterocele" = c(length(ppl2didx), length(ppl1didx)), "Not kidney_with_ureterocele" = c(length(ppl2) - length(ppl2didx), length(ppl1) - length(ppl1didx)), row.names = c("Surg 1 Type 1 had 1 surg", "Surg 1 Type 1 had > 1 surg"))
+df
+fisher.test(df) # was this enriched relative to expected
+
+# treatment_plan
+ppl1didx <- filter(u,MainRow=="Y" & record_id %in% ppl1 & treatment_plan=="1")$record_id
+ppl2didx <- filter(u,MainRow=="Y" & record_id %in% ppl2 & treatment_plan=="1")$record_id
+
+df <- data.frame("treatment_plan" = c(length(ppl2didx), length(ppl1didx)), "Not treatment_plan" = c(length(ppl2) - length(ppl2didx), length(ppl1) - length(ppl1didx)), row.names = c("Surg 1 Type 1 had 1 surg", "Surg 1 Type 1 had > 1 surg"))
+df
+fisher.test(df) # was this enriched relative to expected
+
+# post_op_uti
+ppl1didx <- filter(u,MainRow=="Y" & record_id %in% ppl1 & post_op_uti=="1")$record_id
+ppl2didx <- filter(u,MainRow=="Y" & record_id %in% ppl2 & post_op_uti=="1")$record_id
+
+df <- data.frame("post_op_uti" = c(length(ppl2didx), length(ppl1didx)), "Not post_op_uti" = c(length(ppl2) - length(ppl2didx), length(ppl1) - length(ppl1didx)), row.names = c("Surg 1 Type 1 had 1 surg", "Surg 1 Type 1 had > 1 surg"))
+df
+fisher.test(df) # was this enriched relative to expected
+
+## Association with days until first surg with multi surg
+t.test(filter(u,record_id %in% ppl1 & MainRow=="Y")$daytofirstsurg,filter(u,record_id %in% ppl2 & MainRow=="Y")$daytofirstsurg)
+
+
+
+```
+Technique contains the word "holmium" or "laser" or "fiber" (the two categories would be yes it contains at least one of those words, or no it contains words but not any of those three)
+technique contains the word "electrode" or "bugbee" or "cautery" (same approach as above. specifically look at patients where technique has words in it and then it's YES if it contains one of those words or NO if it has words but not electrode or bugbee or cautery)
+same as above but the words "needle" or "knife" or "can"
+
+```{r technique}
+techppl <- unique(filter(u,record_id %in% type1firstsurgppl & technique!="")$record_id)
+
+## Things associated with multiple surg for ppl who had surg type 1 on their 1st
+ppl1 <- unique(filter(u,record_id %in% techppl & surgery_number=="2")$record_id)
+ppl2 <- setdiff(techppl,ppl1)
+
+u_tech <- filter(u,record_id %in% techppl & surgery_number=="1")
+laser <- unique(filter(u_tech,grepl("holmium|laser|fiber",technique))$record_id)
+knife <- unique(filter(u_tech,grepl("needle|knife",technique))$record_id)
+electrode <- unique(filter(u_tech,grepl("electrode|bugbee|cautery",technique))$record_id)
+
+length(laser)
+length(knife)
+length(electrode)
+
+temp <- filter(u,MainRow=="Y") %>% mutate(laser=ifelse(record_id %in% laser,"Y","N"))
+temp <- temp %>% mutate(knife=ifelse(record_id %in% knife,"Y","N"))
+temp <- temp %>% mutate(electrode=ifelse(record_id %in% electrode,"Y","N"))
+
+# laser
+ppl1didx <- unique(filter(temp,MainRow=="Y" & record_id %in% ppl1 & laser=="Y")$record_id)
+ppl2didx <- unique(filter(temp,MainRow=="Y" & record_id %in% ppl2 & laser=="Y")$record_id)
+lppl1didx <- ppl1didx
+lppl2didx <- ppl2didx
+length(ppl2didx)/(length(ppl2didx)+length(ppl1didx))
+
+df <- data.frame("laser" = c(length(ppl2didx), length(ppl1didx)), "Not laser" = c(length(ppl2) - length(ppl2didx), length(ppl1) - length(ppl1didx)), row.names = c("Surg 1 Type 1 had 1 surg", "Surg 1 Type 1 had > 1 surg"))
+df
+fisher.test(df) # was this enriched relative to expected
+
+# knife
+ppl1didx <- unique(filter(temp,MainRow=="Y" & record_id %in% ppl1 & knife=="Y")$record_id)
+ppl2didx <- unique(filter(temp,MainRow=="Y" & record_id %in% ppl2 & knife=="Y")$record_id)
+length(ppl2didx)/(length(ppl2didx)+length(ppl1didx))
+
+df <- data.frame("knife" = c(length(ppl2didx), length(ppl1didx)), "Not knife" = c(length(ppl2) - length(ppl2didx), length(ppl1) - length(ppl1didx)), row.names = c("Surg 1 Type 1 had 1 surg", "Surg 1 Type 1 had > 1 surg"))
+df
+fisher.test(df) # was this enriched relative to expected
+
+# electrode
+ppl1didx <- unique(filter(temp,MainRow=="Y" & record_id %in% ppl1 & electrode=="Y")$record_id)
+ppl2didx <- unique(filter(temp,MainRow=="Y" & record_id %in% ppl2 & electrode=="Y")$record_id)
+eppl1didx <- ppl1didx
+eppl2didx <- ppl2didx
+length(ppl2didx)/(length(ppl2didx)+length(ppl1didx))
+
+df <- data.frame("electrode" = c(length(ppl2didx), length(ppl1didx)), "Not electrode" = c(length(ppl2) - length(ppl2didx), length(ppl1) - length(ppl1didx)), row.names = c("Surg 1 Type 1 had 1 surg", "Surg 1 Type 1 had > 1 surg"))
+df
+fisher.test(df, alternative="less") # was this enriched relative to expected
+
+# Just compare electrode and laser ppl
+df <- data.frame("electrode" = c(length(eppl2didx), length(eppl1didx)), "Laser" = c(length(lppl2didx), length(lppl1didx)), row.names = c("Surg 1 Type 1 had 1 surg", "Surg 1 Type 1 had > 1 surg"))
+df
+fisher.test(df) # was this enriched relative to expected
+
+```
+
+
+```{r puncture}
+## Things associated with multiple surg for ppl who had surg type 1 on their 1st
+ppl1 <- unique(filter(u,record_id %in% type1firstsurgppl & surgery_number=="2")$record_id)
+ppl2 <- setdiff(type1firstsurgppl,ppl1) # people with surg type 1 first but no additional
+
+u_pun <- filter(u,record_id %in% type1firstsurgppl & surgery_number=="1"& punctures!="" & punctures!="Unknown")
+pun1 <- unique(filter(u_pun,punctures=="1")$record_id)
+
+# pun1 - 1 punct vs everything else (including unknowns / NAs)
+ppl1didx <- unique(intersect(ppl1,pun1)) # surg 1 type 1 and multi surg, had puncture = 1 for their 1st surg
+ppl2didx <- unique(intersect(ppl2,pun1)) # surg 1 type 1 and had only 1 surg, had puncture = 1 for their 1st surg
+
+df <- data.frame("Pun 1" = c(length(ppl2didx), length(ppl1didx)), "Not pun1" = c(length(ppl2) - length(ppl2didx), length(ppl1) - length(ppl1didx)), row.names = c("Surg 1 Type 1 had 1 surg", "Surg 1 Type 1 had > 1 surg"))
+df
+fisher.test(df,alternative="less") # was this enriched relative to expected
+
+# punmul - multiple punctures vs everything else (including unknowns / NAs)
+punmul <- unique(filter(u_pun,punctures!="1")$record_id) # had multi punctures
+ppl1didx <- unique(intersect(ppl1,punmul)) # surg 1 type 1 and multi surg, had multi punctures for their 1st surg
+ppl2didx <- unique(intersect(ppl2,punmul)) # surg 1 type 1 and had only surg, had multi punctures for their 1st surg
+
+df <- data.frame("Pun Multi" = c(length(ppl2didx), length(ppl1didx)), "Not Pun Multi" = c(length(ppl2) - length(ppl2didx), length(ppl1) - length(ppl1didx)), row.names = c("Surg 1 Type 1 had 1 surg", "Surg 1 Type 1 had > 1 surg"))
+df
+fisher.test(df) # was this enriched relative to expected
+
+
+# pun1 - comparing 1 puncture vs multi when only considering those that had reported (aka not unknown/NA)
+oppl1didx <- unique(intersect(ppl1,pun1))
+oppl2didx <- unique(intersect(ppl2,pun1))
+mppl1didx <- unique(intersect(ppl1,punmul))
+mppl2didx <- unique(intersect(ppl2,punmul))
+
+df <- data.frame("Pun 1" = c(length(oppl2didx), length(oppl1didx)), "Pun Multi" = c(length(mppl2didx), length(mppl1didx)), row.names = c("Surg 1 Type 1 had 1 surg", "Surg 1 Type 1 had > 1 surg"))
+df
+fisher.test(df, alternative="less") # was this enriched relative to expected
+
+```
+
+```{r logit}
+
+s <- filter(u,MainRow=="Y"&surg1type1=="Y")
+s$electrode <- ifelse(s$record_id %in% electrode,"Y","N")
+
+# For the surg 1 type 1 people, TUIdef ~ age at first surg
+model <- glm(TUIdefnum ~ agesurg1,data=s,family=binomial)
+summary(model)
+exp(coef(model))[["agesurg1"]] # odds ratio
+exp(confint(model))["agesurg1",] # 95% confidence interval, based on profile likelihood
+summary(model)$coef[,"Pr(>|z|)"][["agesurg1"]] # pvalue
+
+model <- glm(TUIdefnum ~ agesurg1 + sex + ureterocele_pole + treatment_plan + PrenatDiagnosis + diagnosis_reason___2+ prereflux + electrode,data=s,family=binomial)
+summary(model)
+model <- glm(TUIdefnum ~ ureterocele_pole + PrenatDiagnosis + electrode,data=s,family=binomial)
+summary(model)
+model <- glm(TUIdefnum ~ agesurg1 + PrenatDiagnosis,data=s,family=binomial)
+summary(model)
+
+```
+

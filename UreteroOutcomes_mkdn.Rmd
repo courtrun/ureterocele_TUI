@@ -15,6 +15,9 @@ library(lubridate)
 library(ggplot2)
 library(networkD3)
 
+Sys.time()
+Sys.Date()
+
 u <- data.table::fread("C:/Users/Courtney/Desktop/UreteroOutcomes/UreteroOutcomes.csv")
 u$record_id <- as.character(u$record_id)
 
@@ -46,15 +49,31 @@ firstsurg <- distinct(filter(u,surgery_number=="1") %>% select(record_id,surgery
 u <- left_join(u,firstsurg,by=c("record_id"))
 
 # Add column for preop reflux (to all rows)
-rfppl <- unique(filter(u,EverSurg=="Y" & follow_up_date<first_surgery_date) %>%
-        filter(vur_fu>0|vur_fu_2>0|initial_reflux_status>0|duplex_reflux>0|contra_reflux_grade>0))$record_id
+rfppl <- unique((filter(u,EverSurg=="Y" & (follow_up_vcug<first_surgery_date|date_initial_vcug<first_surgery_date)) %>%
+        filter((vur_fu>0&vur_fu<=5)|(vur_fu_2>0&vur_fu_2<=5)|(initial_reflux_status>0&initial_reflux_status<=5)|(duplex_reflux>0&duplex_reflux<=5)|(contra_reflux_grade>0&contra_reflux_grade<=5)|(contra_reflux>0&contra_reflux<=5)))$record_id)
 u <- mutate(u,prereflux=ifelse(record_id %in% rfppl,"Y",ifelse(EverSurg=="Y","N","NA")))
 
+# Add column for preop reflux on same side as ureterocele (to all rows) - ipsilateral
+rfppl <- unique((filter(u,EverSurg=="Y" & (follow_up_vcug<first_surgery_date|date_initial_vcug<first_surgery_date)) %>%
+        filter((vur_fu>0&vur_fu<=5)|(vur_fu_2>0&vur_fu_2<=5)|(initial_reflux_status>0&initial_reflux_status<=5)|(duplex_reflux>0&duplex_reflux<=5)))$record_id)
+u <- mutate(u,ipsilateral=ifelse(record_id %in% rfppl,"Y",ifelse(EverSurg=="Y","N","NA")))
+
+# Add column for preop reflux on different side as ureterocele (to all rows) - contralateral
+rfppl <- unique((filter(u,EverSurg=="Y" & (follow_up_vcug<first_surgery_date|date_initial_vcug<first_surgery_date)) %>%
+        filter((contra_reflux_grade>0&contra_reflux_grade<=5)|(contra_reflux>0&contra_reflux<=5)))$record_id)
+u <- mutate(u,contralateral=ifelse(record_id %in% rfppl,"Y",ifelse(EverSurg=="Y","N","NA")))
+
 # Add column for postop reflux (to all rows)
-rfppl <- unique(filter(u,EverSurg=="Y" & follow_up_date>first_surgery_date) %>%
+rfppl <- unique((filter(u,EverSurg=="Y" & follow_up_date>first_surgery_date) %>%
             mutate(temp=first_surgery_date+90) %>% filter(follow_up_date<=temp) %>%
-        filter(vur_fu>0|vur_fu_2>0|initial_reflux_status>0|duplex_reflux>0|contra_reflux_grade>0))$record_id
+        filter((vur_fu>0&vur_fu<=5)|(vur_fu_2>0&vur_fu_2<=5)|(initial_reflux_status>0&initial_reflux_status<=5)|(duplex_reflux>0&duplex_reflux<=5)|(contra_reflux_grade>0&contra_reflux_grade<=5)))$record_id)
+u <- mutate(u,postreflux90=ifelse(record_id %in% rfppl,"Y",ifelse(EverSurg=="Y","N","NA")))
+
+# Add column for postop reflux (to all rows)
+rfppl <- unique((filter(u,EverSurg=="Y" & (follow_up_vcug>first_surgery_date|date_initial_vcug>first_surgery_date)) %>%
+        filter((vur_fu>0&vur_fu<=5)|(vur_fu_2>0&vur_fu_2<=5)|(initial_reflux_status>0&initial_reflux_status<=5)|(duplex_reflux>0&duplex_reflux<=5)|(contra_reflux_grade>0&contra_reflux_grade<=5)|(contra_reflux>0&contra_reflux<=5)))$record_id)
 u <- mutate(u,postreflux=ifelse(record_id %in% rfppl,"Y",ifelse(EverSurg=="Y","N","NA")))
+
 
 # Add column for time from diagnosis (birth date if prenatdiag) to first surg (to Main row only)
 dtfs <- filter(u,MainRow=="Y") %>% 
@@ -72,8 +91,464 @@ u$TUIdefnum <- as.numeric(ifelse(u$record_id %in% ppl & u$record_id %in% notdef,
 as <- filter(u,MainRow=="Y") %>% mutate(agesurg1=as.numeric(ymd(first_surgery_date)-ymd(dob))/365.25)%>% select(record_id,agesurg1)
 u <- left_join(u,as,by=c("record_id"))
 
+# Add column for if ANY UTI AFTER (ok if had one earlier) to all rows
+uti_after_ppl <- unique(filter(u, (diagnosis_reason___2=="1" | reason_imm_surgery___4=="1" | uti=="1" | febrile_uti=="1" | post_op_uti=="1" | repeat_surg_indication=="1" | reason_surgery___4 == "1") & follow_up_date>first_surgery_date)$record_id)
+uti_after_ppl <- unique(c(uti_after_ppl,unique(filter(u,(repeat_surg_indication=="1"|post_op_uti=="1"))$record_id)))
+u <- u %>% mutate(uti_after_surg=ifelse(record_id %in% uti_after_ppl, "Y","N"))
+
+
 ```
 
+```{r Snakey plot install}
+# From https://github.com/Displayr/flipPlots/blob/master/R/sankeydiagram.R because couldn't install
+SankeyDiagram <- function(data = NULL, links.and.nodes = NULL, output.data.only = FALSE,
+                          max.categories = 8, subset = NULL, weights = NULL,
+                          font.size = 12, font.family = "Times New Roman",
+                          font.unit = "px", colors = NULL,
+                          link.color = c("None", "Source", "Target", "First variable",
+                          "Last variable")[1], variables.share.values = FALSE,
+                          label.show.varname = TRUE, label.max.length = 100,
+                          label.show.counts = FALSE, label.show.percentages = FALSE,
+                          node.position.automatic = TRUE,
+                          node.width = 30, node.padding = 10, sinks.right = TRUE,
+                          hovertext.show.percentages = FALSE)
+{
+    if (!is.null(links.and.nodes))
+    {
+        link.color <- links.and.nodes$link.color
+        links <- links.and.nodes$links
+        nodes <- links.and.nodes$nodes
+        hovertext.show.percentages <- links.and.nodes$hovertext.show.percentages
+
+    } else
+    {
+        if (!is.data.frame(data))
+            data <- as.data.frame(data)
+        else if (!is.null(attr(data[[1]], "questiontype")))
+        {
+            # From R 4.0, stringsAsFactors defaults to FALSE.
+            # Because of this, a specific call to as.data.frame() in the
+            # Visualization - Sankey Diagram wiki code no longer behaves as
+            # before. This only affects users who supplied variables as data,
+            # which is why we check for the questiontype attribute.
+            # The code below converts any strings to factors, which would have
+            # previously been done by the call to as.data.frame().
+            data <- as.data.frame(as.list(data),
+                                  stringsAsFactors = TRUE,
+                                  check.names = FALSE)
+        }
+
+        if (nrow(data) < 2)
+            stop(paste0(nrow(data), "observations: more data is required to create a Sankey diagram."))
+        if (max.categories < 2)
+            stop("Maximum number of categories must be greater than 1.")
+
+        if (!is.null(weights) & length(weights) != nrow(data))
+            stop("'weights' and 'data' are required to have the same number of observations. They do not.")
+        if (!is.null(subset) & length(subset) > 1 & length(subset) != nrow(data))
+            stop("'subset' and 'data' are required to have the same number of observations. They do not.")
+
+        # Take subset and resample to generate a weighted sample, if necessary.
+        if (is.null(subset))
+            subset.data <- data
+        else {
+            subset.data <- data[subset, , drop = FALSE]
+            weights <- weights[subset]
+        }
+
+        tmp.is.numeric <- sapply(subset.data, is.numeric)
+        if (link.color %in% c("Source", "Target") && variables.share.values &&
+            any(tmp.is.numeric) && !all(tmp.is.numeric))
+            stop("'Variables share common values' has been set to true so variables must be of the same type.")
+        variables <- categorizeData(subset.data, weights, max.categories,
+            variables.share.values, label.show.varname, label.max.length)
+        links <- computeLinks(variables, weights, hovertext.show.percentages)
+        nodes <- nodeDictionary(variables, weights, label.show.counts, label.show.percentages)
+
+        # Determine color of nodes
+        grps <- 0:(nrow(nodes)-1)
+        if (variables.share.values && link.color %in% c("Source", "Target"))
+        {
+            all.levels <- attr(variables, "all.levels")
+            tmp.var.names <- paste(names(variables), ": ", sep = "", collapse = "|")
+            tmp.node.names <- gsub(tmp.var.names, "", nodes$name)
+            if (label.show.counts || label.show.percentages)
+                tmp.node.names <- gsub(" \\([a-zA-Z0-9 =%,]*\\)$", "", tmp.node.names, perl = TRUE)
+            nodes$group <- factor(match(tmp.node.names, all.levels))
+        }
+        else if (link.color == "None")      # nodes at each level to be the same
+             nodes$group <- factor(rep(1:ncol(variables), sapply(variables, function(x){length(unique(x))})))
+        else if (link.color == "Last variable" || link.color == "First variable")
+            nodes$group <- factor(getNodeGroups(link.color, links))
+        else
+            nodes$group <- factor(grps) # all nodes different colors
+
+        # Determine colors of links
+        if (link.color == "Source")
+            links$group <- as.factor(nodes$group[links$source+1])
+        else if (link.color == "Target")
+            links$group <- as.factor(nodes$group[links$target+1])
+        else if (link.color == "Last variable")
+            links$group <- as.factor(nodes$group[links$target+1])
+        else if (link.color == "First variable")
+            links$group <- as.factor(nodes$group[links$source+1])
+    }
+
+    if (output.data.only)
+        return(list(link.color = link.color, links = links, nodes = nodes,
+                    hovertext.show.percentages = hovertext.show.percentages))
+
+    if (is.null(colors))
+        color.str <- "d3.scaleOrdinal(d3.schemeCategory20);"
+    else
+        color.str <- paste0('d3.scaleOrdinal() .domain([\'',
+                     paste(levels(nodes$group), collapse = '\',\''), '\']) .range([\'',
+                     paste(colorsToHex(colors), collapse = '\',\''), '\']);')
+
+    # For the other chart types, the font size conversion
+    # happens inside flipChart::CChart but SankeyDiagram is called separately.
+    if (tolower(font.unit) %in% c("pt", "point", "points"))
+    {
+        fsc <- 1.3333
+        font.size = round(fsc * font.size, 0)
+    }
+
+    res <- sankeyNetwork(Links = links, LinkGroup = if (link.color == "None") NULL else 'group',
+                Nodes = nodes, NodeID = 'name', NodeGroup = 'group', nodeWidth = node.width,
+                Source = "source", Target = "target", Value = "value", nodePadding = node.padding,
+                fontSize = font.size, fontFamily = font.family, colourScale = JS(color.str),
+                iterations = if (node.position.automatic) 32 else 0,
+                units = if (hovertext.show.percentages) "%" else "", sinksRight = sinks.right)
+    class(res) <- c(class(res), "visualization-selector")
+    return(res)
+}
+
+getNodeGroups <- function(type, links)
+{
+    num.nodes <- length(unique(unlist(links$source, links$target)))
+    grps <- rep(NA, num.nodes)
+    gval <- rep(NA, num.nodes)
+
+    indexes <- 1:nrow(links)
+    src.ind <- 1
+    tgt.ind <- 2
+    if (type == "Last variable")
+    {
+        indexes <- rev(indexes)
+        src.ind <- 2
+        tgt.ind <- 1
+    }
+
+    for (i in indexes)
+    {
+        tmp.node <- links[i,src.ind]
+        if (is.na(grps[tmp.node+1]))
+            grps[tmp.node+1] <- tmp.node
+        else
+            tmp.node <- grps[tmp.node+1]
+
+        if (is.na(gval[links[i,tgt.ind]+1]) ||
+            gval[links[i,tgt.ind]+1] < links$value[i])
+        {
+            grps[links[i,tgt.ind]+1] <- tmp.node
+            gval[links[i,tgt.ind]+1] <- links$value[i]
+        }
+    }
+    return(grps)
+}
+
+
+# Ensures it is always a 6-digit hex
+colorsToHex <- function(xx)
+{
+    res <- sapply(xx, function(x){tryCatch({ tmp <- col2rgb(x, alpha = TRUE);
+        return(rgb(t(tmp[1:3]), alpha = if (tmp[4] == 255) NULL else tmp[4], maxColorValue = 255)) },
+        error=function(cond){NA})})
+    ind <- which(is.na(res))
+    if (length(ind) > 0)
+    {
+        res[ind] <- "#000000"
+        for (i in ind)
+            warning("Invalid color '", names(res)[i], "' replaced with '#000000'")
+    }
+    return(res)
+}
+
+#' computeLinks
+#'
+#' Computes the links between the nodes, so that can be expressed as a network.
+#' @param data A \code{\link{data.frame}} or \code{\link{list}} of variables.
+#' @param weights A numeric vector with length equal to the number of rows in
+#'  \code{data}. This is used to adjust the width of the links.
+#' @param show.percentages Whether to show percentages or counts
+#' @importFrom stats xtabs
+computeLinks <- function(data, weights, show.percentages = FALSE)
+{
+    links <- NULL
+    counter <- 0
+    n <- length(data)
+    tmp.total <- nrow(data)
+
+    for (i in 1:(n - 1)){
+        x <- data[[i]]
+        y <- data[[i + 1]]
+        x.names <- levels(x)
+        n.x <- length(x.names)
+        n.y <- nlevels(y)
+        x.y <- if (is.null(weights)) xtabs(~ x + y)
+                  else               xtabs(weights ~ x + y)
+        for (i.x in 1:n.x) {
+            row.node <- counter + i.x - 1
+            for (i.y in 1:n.y) {
+                value <- x.y[i.x, i.y]
+                if (value > 0)
+                {
+                    if (show.percentages)
+                        value <- value / tmp.total * 100
+
+                    column.node <- counter + n.x + i.y - 1
+                    links <- rbind(links,c(row.node,column.node, value))
+                }
+            }
+        }
+        counter <- counter + n.x
+    }
+    links <- as.data.frame(links)
+    names(links) <- c("source", "target", "value")
+    links
+}
+
+#' @importFrom verbs Sum
+nodeDictionary <- function(list.of.factors, weights, show.counts, show.percentages)
+{
+    nodes <- NULL
+    for (vr in list.of.factors)
+    {
+        if (show.counts || show.percentages)
+        {
+            tmp.info <- if (is.null(weights)) xtabs(~vr)
+                        else                  xtabs(weights~vr)
+
+            suffix <- ""
+            if (show.counts)
+                suffix <- paste("n =", tmp.info)
+            if (show.percentages)
+            {
+                denom <- if (!is.null(weights)) Sum(weights) else length(vr)
+                suffix <- paste(suffix, sprintf("%.0f%%", tmp.info/denom*100),
+                    sep = if (show.counts) ", " else "")
+            }
+            nodes <- c(nodes, paste0(levels(vr), " (", suffix, ")"))
+        }
+        else
+            nodes <- c(nodes, levels(vr))
+    }
+    data.frame(name = nodes)
+}
+
+#' categorizeData
+#'
+#' Creates a dictionary of the nodes.
+#' Quantizes numeric variables.
+#' @param data A \code{\link{data.frame}} or \code{\link{list}} of variables.
+#' @param weights A numeric vector giving the weight of each row in \code{data}.
+#' @param max.categories When the number of unique values exceeds this value,
+#' the variable is quantized.
+#' @param share.values Whether the values in each variable are expected to be the same.
+#' @param label.show.varname Whether to include the variable name in the node label.
+#' @param label.max.length Maximum number of characters in the node label.
+categorizeData <- function(data, weights, max.categories, share.values,
+                           label.show.varname, label.max.length)
+{
+    var.names <- names(data)
+    n <- length(var.names)
+    breaks <- NULL
+    if (share.values)
+    {
+        if (is.numeric(data[[1]]) && length(unique(unlist(data))) > max.categories)
+        {
+            n.cuts <- max.categories - if (any(is.na(unlist(data)))) 1 else 0
+            tmp.range <- range(unlist(data), na.rm = TRUE)
+            breaks <- seq(from = tmp.range[1], to = tmp.range[2], length = n.cuts+1)
+            breaks[1] <- (1 - 0.001) * breaks[1]
+            breaks[n.cuts+1] <- (1 + 0.001) * breaks[n.cuts+1]
+        }
+        all.dat <- quantizeVariable(unlist(data), max.categories, breaks = breaks)
+    }
+    num.values <- sapply(data, function(vv) length(unique(vv)))
+    var.ordered <- order(num.values, decreasing = TRUE)
+
+    # Numeric breaks can be identified without any interaction between variables
+    # Factor is used if variable is non-numeric or if there are only a few values
+    for (i in var.ordered)
+        data[[i]] <- quantizeVariable(data[[i]], max.categories, breaks = breaks)
+
+    for (i in var.ordered)
+    {
+        while (length(unique(data[[i]])) > max.categories)
+        {
+            node.change <- findNodesToMerge(data, i, weights)
+            data[[i]] <- mergeNodes(data[[i]], node.change, label.max.length)
+            if (share.values)
+            {
+               for (j in 1:n)
+                    data[[i]] <- mergeNodes(data[[i]], node.change, label.max.length)
+                all.dat <- mergeNodes(all.dat, node.change, label.max.length)
+            }
+        }
+        data[[i]] <- addNA(data[[i]], ifany = TRUE)
+        if (label.show.varname)
+            levels(data[[i]]) <- paste(var.names[i], levels(data[[i]]), sep = ": ")
+        else
+            levels(data[[i]]) <- paste0("", levels(data[[i]]))
+    }
+    if (share.values)
+        attr(data, "all.levels") <- levels(all.dat)
+    data
+}
+
+#' findNodesToMerge
+#'
+#' Identifies the pair of nodes to merge which will minimize
+#' distinct links. Note this uses the weights, so adding multiple
+#' small links may be preferred to adding a single heavy link.
+#' Note also that the link to the merged node i.e. (A,B+C) is the
+#' has a weight that is the sum of (A,B) and (A,C). The relative
+#' proportions are not taken into account.
+#" If there are multiple node-pairs with the same number of distinct
+#  links, then the pair to give the smallest merged node is used.
+#' @param df dataframe containing factor variables only.
+#' @param column index of the column which we are looking to merge nodes for
+#' @param weights numeric vector containing weights for each row of \code{df}.
+#' @importFrom verbs Sum SumEmptyHandling
+findNodesToMerge <- function(df, column, weights = NULL)
+{
+    lvls <- levels(df[[column]])
+    n <- length(lvls)
+
+    # If there are many categories ignore linkage patterns
+    # and merge the smallest categories in the old way
+    if (n > 50)
+    {
+        tb <- sort(table(df[[column]]))
+        return(names(tb)[1:2])
+    }
+
+    profile <- do.call("paste", c(df[-column], sep = "\\r"))
+    if (is.null(weights))
+        weights <- rep(1, nrow(df))
+
+    # Minimize number fo links that are not shared and
+    # If tied, minimize size of merged nodes
+    m.diff <- matrix(NA, n, n) # number of differences
+    m.size <- matrix(NA, n, n) # weight of merged node
+    for (i in 1:(n-1))
+    {
+        for (j in (i+1):n)
+        {
+            ind.i  <- which(df[[column]] == lvls[i])
+            ind.j  <- which(df[[column]] == lvls[j])
+            ind.ij <- which(!profile[ind.i] %in% profile[ind.j])
+            ind.ji <- which(!profile[ind.j] %in% profile[ind.i])
+            m.diff[i,j] <- SumEmptyHandling(weights[c(ind.i[ind.ij], ind.j[ind.ji])], remove.missing = FALSE)
+            m.size[i,j] <- SumEmptyHandling(weights[c(ind.i, ind.j)])
+        }
+    }
+    min.diff <- min(m.diff, na.rm = TRUE)
+    ind.min <- which(m.diff == min.diff)
+    if (length(ind.min) > 1)
+    {
+        ind.min.sz <- which.min(m.size[ind.min])
+        ind.min <- ind.min[ind.min.sz]
+    }
+    ind.min <- as.numeric(arrayInd(ind.min, .dim = dim(m.diff)))
+    return(lvls[ind.min])
+}
+
+#' Merge levels in a factor
+#'
+#' @param x factor variable
+#' @param old.nodes a vector containing factor levels to merge.
+#'   Note level names are used rather than the numeric representation
+#'   is used so it can be applied to multiple factors
+#' @param nchar Maximum number of characters in each label.
+mergeNodes <- function(x, old.nodes, nchar)
+{
+    new.node <- paste(old.nodes, collapse = ", ")
+    if (nchar(new.node) > nchar)
+        new.node <- paste0(substr(new.node, 1, nchar), " ...")
+    ind <- match(old.nodes, levels(x))
+    levels(x)[ind] <- new.node
+    return(x)
+}
+CopyAttributes <- function(data.without.attributes, data.with.attributes,
+                           attr.to.not.copy = c("dimnames", "names", "row.names",
+                                                "dim", "class", "levels"))
+{
+    ## for data.frame recursion when arg1 has columns arg2 does not,
+    ## atts.to.copy will be NULL and data.without.attributes is returned
+    atts.to.copy <- names(attributes(data.with.attributes))
+    atts.to.copy <- atts.to.copy[!atts.to.copy %in% attr.to.not.copy]
+    for (a in atts.to.copy)
+        attr(data.without.attributes, a) <- attr(data.with.attributes, a)
+
+    if (is.list(data.without.attributes) && is.list(data.with.attributes))
+        for (n in names(data.without.attributes))
+            data.without.attributes[[n]] <- CopyAttributes(data.without.attributes[[n]],
+                                                           data.with.attributes[[n]])
+
+    data.without.attributes
+}
+
+Factor <- function(x, ...)
+{
+
+    if ("QDate" %in% class(x))
+        # When the input is a Date from Q (class QDate)
+        # extract the date categories which tell us
+        # about the aggregation that has been used in Q.
+        result <- attr(x, "QDate")
+    else if ("factor" %in% class(x))
+    {
+        # Warning and addressing duplicate factor levels (this throws an error in 'factor' since R4.3)
+        level.count <- table(levels(x))
+        if (max(level.count) > 1)
+        {
+            duplicates <- paste0(names(level.count[level.count > 1]), collapse = ", ")
+            warning(paste0(Names(x), " contains duplicate factor levels: ", duplicates, "."))
+            result <- droplevels(factor(x, levels <- unique(levels(x)), ...))  # bug in 3.4.0
+        }
+        else
+            result <- factor(x, ...)
+    }
+    else if (is.character(x)) # retain ordering in which it appears
+        result <- factor(x, levels = unique(x))
+    else
+        result <- factor(x, ...)
+    return(CopyAttributes(result, x))
+}
+
+#' @importFrom flipTransformations Factor
+quantizeVariable <- function(x, max.categories, breaks = NULL)
+{
+    if (is.null(breaks) && (length(unique(x)) <= max.categories || is.factor(x)))
+    {
+        x.fac <- Factor(x)
+
+    } else if (is.numeric(x)) # if breaks is supplied, this clause is always used
+    {
+        n.cuts <- max.categories - if(any(is.na(x))) 1 else 0
+        x.fac <- if (is.null(breaks)) cut(x, max(2, n.cuts)) else cut(x, breaks)
+
+    } else
+    {
+        x.fac <- rep("Text", length(x))
+        x.fac[x == ""] <- "BLANK"
+    }
+    x.fac <- addNA(x.fac, ifany = TRUE)
+    return(x.fac)
+}
+```
 
 ```{r primary TUI surgery dates}
 temp <- filter(u,surg1type1=="Y"&MainRow=="Y")
@@ -107,6 +582,7 @@ median(filter(u,surg1type1=="N"&surgery_number=="1")$agesurg1)
 min(filter(u,surg1type1=="N"&surgery_number=="1")$agesurg1)
 max(filter(u,surg1type1=="N"&surgery_number=="1")$agesurg1)
 mean(filter(u,surg1type1=="N"&surgery_number=="1")$agesurg1)
+
 
 ```
 
@@ -163,6 +639,8 @@ ppl <- (u %>% filter(surgery_number==1&type_surgery==1))$record_id
 temp <-  filter(u,record_id %in% ppl & MainRow=="Y") %>% select(record_id,first_surgery_date,date_visit_4)
 temp <- temp %>% mutate(fu=ymd(date_visit_4)-ymd(first_surgery_date))
 temp %>% summarize(meanfu=mean(fu),medfu=median(fu),sdfu=sd(fu),rangefu=range(fu))
+nrow(temp %>% filter(fu==0)) # how many had fu == 0
+temp %>% filter(fu>0) %>% summarize(meanfu=mean(fu),medfu=median(fu),sdfu=sd(fu),rangefu=range(fu))
 
 # How many type 1 surg 1 had post op uti for that  & other than those how many had a febrile uti at some point after
 pou <- unique((u %>% filter(surgery_number==1&type_surgery==1  & post_op_uti=="1"))$record_id)
@@ -209,6 +687,110 @@ ppl <- (u %>% filter(surgery_number==1&type_surgery==1))$record_id
 n <- (filter(u,record_id %in% ppl) %>% group_by(record_id) %>% count())$n
 summary(n)
 
+# How many ipsilateral vs contralateral (reflux before surgery on same side as ureterocele)?
+nrow(s %>% filter(ipsilateral=="Y"&prereflux=="Y")) # how many ipsilateral (ok if had contra too)
+nrow(s %>% filter(contralateral=="Y"&prereflux=="Y")) # how many had prereflux on other side (ok if had ipsi too)
+nrow(s %>% filter(prereflux=="Y"))-nrow(s %>% filter(contralateral=="Y"&prereflux=="Y"))  # how many ONLY ipsilateral
+nrow(s %>% filter(prereflux=="Y"))-nrow(s %>% filter(ipsilateral=="Y"&prereflux=="Y")) # how many had prereflux ONLY other side
+
+# How many postop reflux
+nrow(s %>% filter(postreflux=="Y")) # how many postop reflux (ok if had prereflux too)
+nrow(s %>% filter(postreflux=="Y"&prereflux=="N")) # how many ONLY postop reflux (not prereflux too)
+
+# How many had any UTI after first surg (ok if had UTI earlier)
+nrow(filter(s,uti_after_surg=="Y"))
+
+# VCUG dates: date_initial_vcug, follow_up_vcug
+length(unique(filter(u,surg1type1=="Y"& (date_initial_vcug<first_surgery_date|follow_up_vcug<first_surgery_date))$record_id)) # had a vcug before first surg
+length(unique(filter(u,surg1type1=="Y"& (date_initial_vcug>first_surgery_date|follow_up_vcug>first_surgery_date))$record_id)) # had a vcug after first surg
+b <- unique(filter(u,surg1type1=="Y"& (date_initial_vcug>first_surgery_date|follow_up_vcug>first_surgery_date))$record_id)
+a <- unique(filter(u,surg1type1=="Y"& (date_initial_vcug<first_surgery_date|follow_up_vcug<first_surgery_date))$record_id)
+length(union(a,b)) # had at least a vcug either before OR after first surg
+length(intersect(a,b)) # had a vcug BOTH before AND after first surg
+setdiff(s$record_id,union(a,b)) # who didn't have vcug before or after first surg
+
+# Presurg renal bladder ultrasound
+length(unique((filter(u,surg1type1=="Y" & ((as.numeric(ymd(first_surgery_date)-ymd(date_initial_rbus))<=90 & as.numeric(ymd(first_surgery_date)-ymd(date_initial_rbus))>0)| (as.numeric(ymd(first_surgery_date)-ymd(fu_rbus_date))<=90 & as.numeric(ymd(first_surgery_date)-ymd(fu_rbus_date))>0))))$record_id)) # how many had at least one rbus within 90 days of 1st surg
+length(unique((filter(u,surg1type1=="Y" & ((as.numeric(ymd(first_surgery_date)-ymd(date_initial_rbus))<=30 & as.numeric(ymd(first_surgery_date)-ymd(date_initial_rbus))>0)| (as.numeric(ymd(first_surgery_date)-ymd(fu_rbus_date))<=30 & as.numeric(ymd(first_surgery_date)-ymd(fu_rbus_date))>0))))$record_id)) # how many had at least one rbus within 30 days of 1st surg
+length(unique((filter(u,surg1type1=="Y" & ((as.numeric(ymd(first_surgery_date)-ymd(date_initial_rbus))<=7 & as.numeric(ymd(first_surgery_date)-ymd(date_initial_rbus))>0)| (as.numeric(ymd(first_surgery_date)-ymd(fu_rbus_date))<=7 & as.numeric(ymd(first_surgery_date)-ymd(fu_rbus_date))>0))))$record_id)) # how many had at least one rbus within 7 days of 1st surg
+
+# Compare mean total rbus score within x days before surgery for multisurg type1surg1 vs nonmultisurg type1surg1
+temp <- filter(u,surg1type1=="Y" & ((as.numeric(ymd(first_surgery_date)-ymd(date_initial_rbus))<=7 & as.numeric(ymd(first_surgery_date)-ymd(date_initial_rbus))>0)| (as.numeric(ymd(first_surgery_date)-ymd(fu_rbus_date))<=7 & as.numeric(ymd(first_surgery_date)-ymd(fu_rbus_date))>0)))%>% select(date_initial_rbus,fu_rbus_date,first_surgery_date,baseline_hydro_ureterocele,other_moiety_hydro,follow_up_hydro_cele,follow_up_hydro_cele_2,record_id)
+t1 <- temp %>% filter(!is.na(fu_rbus_date)&follow_up_hydro_cele<5&follow_up_hydro_cele_2<5) %>% group_by(record_id) %>% arrange(desc(fu_rbus_date)) %>% filter(1:n() == 1) %>% select(-date_initial_rbus,-baseline_hydro_ureterocele,-other_moiety_hydro)# for everyone w/fu_rbus_date w/in 7 days of first surg, get latest date for each person
+t2 <- temp %>% filter(!is.na(date_initial_rbus)&baseline_hydro_ureterocele<5&other_moiety_hydro<5) %>% group_by(record_id) %>% arrange(desc(date_initial_rbus)) %>% filter(1:n() == 1) %>% select(-fu_rbus_date,-follow_up_hydro_cele,-follow_up_hydro_cele_2)# for everyone w/date_initial_rbus w/in 7 days of first surg, get latest date for each person
+t <- full_join(t1,t2,by=c("first_surgery_date", "record_id")) # combine
+t <- t %>% mutate(total_rbus=ifelse(is.na(fu_rbus_date),sum(baseline_hydro_ureterocele,other_moiety_hydro,na.rm=TRUE),sum(follow_up_hydro_cele,follow_up_hydro_cele_2,na.rm=TRUE)))%>% select(date_initial_rbus,fu_rbus_date,first_surgery_date,baseline_hydro_ureterocele,other_moiety_hydro,follow_up_hydro_cele,follow_up_hydro_cele_2,record_id,total_rbus)
+multisurg <- unique(filter(u,surg1type1=="Y"&surgery_number=="2")$record_id)
+t <- right_join(u %>% filter(MainRow=="Y"&surg1type1=="Y") %>% mutate(MultiSurg=ifelse(record_id %in% multisurg,"Yes","No")) %>% select(record_id,MultiSurg),t %>% select(record_id,total_rbus))
+t.test(filter(t,MultiSurg=="No")$total_rbus,filter(t,MultiSurg=="Yes")$total_rbus)
+
+# Compare mean total rbus score within x days before surgery for multisurg type1surg1 vs nonmultisurg type1surg1
+temp <- filter(u,surg1type1=="Y" & ((as.numeric(ymd(first_surgery_date)-ymd(date_initial_rbus))<=30 & as.numeric(ymd(first_surgery_date)-ymd(date_initial_rbus))>0)| (as.numeric(ymd(first_surgery_date)-ymd(fu_rbus_date))<=30 & as.numeric(ymd(first_surgery_date)-ymd(fu_rbus_date))>0)))%>% select(date_initial_rbus,fu_rbus_date,first_surgery_date,baseline_hydro_ureterocele,other_moiety_hydro,follow_up_hydro_cele,follow_up_hydro_cele_2,record_id)
+t1 <- temp %>% filter(!is.na(fu_rbus_date)&follow_up_hydro_cele<5&follow_up_hydro_cele_2<5) %>% group_by(record_id) %>% arrange(desc(fu_rbus_date)) %>% filter(1:n() == 1) %>% select(-date_initial_rbus,-baseline_hydro_ureterocele,-other_moiety_hydro)# for everyone w/fu_rbus_date w/in 30 days of first surg, get latest date for each person
+t2 <- temp %>% filter(!is.na(date_initial_rbus)&baseline_hydro_ureterocele<5&other_moiety_hydro<5) %>% group_by(record_id) %>% arrange(desc(date_initial_rbus)) %>% filter(1:n() == 1) %>% select(-fu_rbus_date,-follow_up_hydro_cele,-follow_up_hydro_cele_2)# for everyone w/date_initial_rbus w/in 30 days of first surg, get latest date for each person
+t <- full_join(t1,t2,by=c("first_surgery_date", "record_id")) # combine
+t <- t %>% mutate(total_rbus=ifelse(is.na(fu_rbus_date),sum(baseline_hydro_ureterocele,other_moiety_hydro,na.rm=TRUE),sum(follow_up_hydro_cele,follow_up_hydro_cele_2,na.rm=TRUE)))%>% select(date_initial_rbus,fu_rbus_date,first_surgery_date,baseline_hydro_ureterocele,other_moiety_hydro,follow_up_hydro_cele,follow_up_hydro_cele_2,record_id,total_rbus)
+multisurg <- unique(filter(u,surg1type1=="Y"&surgery_number=="2")$record_id)
+t <- right_join(u %>% filter(MainRow=="Y"&surg1type1=="Y") %>% mutate(MultiSurg=ifelse(record_id %in% multisurg,"Yes","No")) %>% select(record_id,MultiSurg),t %>% select(record_id,total_rbus))
+t.test(filter(t,MultiSurg=="No")$total_rbus,filter(t,MultiSurg=="Yes")$total_rbus)
+
+# Compare mean total rbus score within x days before surgery for multisurg type1surg1 vs nonmultisurg type1surg1
+temp <- filter(u,surg1type1=="Y" & ((as.numeric(ymd(first_surgery_date)-ymd(date_initial_rbus))<=90 & as.numeric(ymd(first_surgery_date)-ymd(date_initial_rbus))>0)| (as.numeric(ymd(first_surgery_date)-ymd(fu_rbus_date))<=90 & as.numeric(ymd(first_surgery_date)-ymd(fu_rbus_date))>0)))%>% select(date_initial_rbus,fu_rbus_date,first_surgery_date,baseline_hydro_ureterocele,other_moiety_hydro,follow_up_hydro_cele,follow_up_hydro_cele_2,record_id)
+t1 <- temp %>% filter(!is.na(fu_rbus_date)&follow_up_hydro_cele<5&follow_up_hydro_cele_2<5) %>% group_by(record_id) %>% arrange(desc(fu_rbus_date)) %>% filter(1:n() == 1) %>% select(-date_initial_rbus,-baseline_hydro_ureterocele,-other_moiety_hydro)# for everyone w/fu_rbus_date w/in 90 days of first surg, get latest date for each person
+t2 <- temp %>% filter(!is.na(date_initial_rbus)&baseline_hydro_ureterocele<5&other_moiety_hydro<5) %>% group_by(record_id) %>% arrange(desc(date_initial_rbus)) %>% filter(1:n() == 1) %>% select(-fu_rbus_date,-follow_up_hydro_cele,-follow_up_hydro_cele_2)# for everyone w/date_initial_rbus w/in 90 days of first surg, get latest date for each person
+t <- full_join(t1,t2,by=c("first_surgery_date", "record_id")) # combine
+t <- t %>% mutate(total_rbus=ifelse(is.na(fu_rbus_date),sum(baseline_hydro_ureterocele,other_moiety_hydro,na.rm=TRUE),sum(follow_up_hydro_cele,follow_up_hydro_cele_2,na.rm=TRUE)))%>% select(date_initial_rbus,fu_rbus_date,first_surgery_date,baseline_hydro_ureterocele,other_moiety_hydro,follow_up_hydro_cele,follow_up_hydro_cele_2,record_id,total_rbus)
+multisurg <- unique(filter(u,surg1type1=="Y"&surgery_number=="2")$record_id)
+t <- right_join(u %>% filter(MainRow=="Y"&surg1type1=="Y") %>% mutate(MultiSurg=ifelse(record_id %in% multisurg,"Yes","No")) %>% select(record_id,MultiSurg),t %>% select(record_id,total_rbus))
+t.test(filter(t,MultiSurg=="No")$total_rbus,filter(t,MultiSurg=="Yes")$total_rbus)
+
+
+```
+
+```{r Non-primary TUI patients}
+
+nt <-  unique(filter(u,surg1type1=="N")$record_id)
+length(nt)
+
+### For all non-primary TUI patients
+# How many experienced reflux -  initial_reflux_status , duplex_reflux , contra_reflux_grade , contra_reflux , vur_fu , vur_fu_2
+nt_u <- u %>% filter(record_id %in% nt) %>%
+    filter((vur_fu>0&vur_fu<=5)|(vur_fu_2>0&vur_fu_2<=5)|(initial_reflux_status>0&initial_reflux_status<=5)|(duplex_reflux>0&duplex_reflux<=5)|(contra_reflux_grade>0&contra_reflux_grade<=5)|(contra_reflux>0&contra_reflux<=5)) %>% select(initial_reflux_status , duplex_reflux , contra_reflux_grade , contra_reflux , vur_fu , vur_fu_2, record_id)
+ids <- nt_u$record_id
+nt_u <- nt_u %>% select(-record_id)
+nt_u[nt_u > 5] <- 0 # if > 5, set to 0
+nt_u$record_id <- ids
+nt_u$highest_reflux <- apply(nt_u[, 1:(ncol(nt_u)-1)], 1, max, na.rm=T)
+nt_reflux <- nt_u %>% group_by(record_id) %>% summarize(reflux=max(highest_reflux))
+nrow(nt_reflux)
+rx <- nt_reflux$record_id
+
+# How had low vs high grade reflux
+nrow(filter(nt_reflux,reflux<3))
+nrow(filter(nt_reflux,reflux>2))
+low <- filter(nt_reflux,reflux<3)$record_id
+high <- filter(nt_reflux,reflux>2)$record_id
+
+# How many never had any surgery 
+length(unique(filter(u,record_id %in% rx & EverSurg=="N")$record_id))
+
+# How many had first surgery type_surgery == 2
+length(unique(filter(u,record_id %in% rx & surgery_number==1&type_surgery==2)$record_id))
+
+### For low grade reflux non-primary TUI patients
+# How many never had any surgery 
+length(unique(filter(u,record_id %in% low & EverSurg=="N")$record_id))
+
+# How many had first surgery type_surgery == 2
+length(unique(filter(u,record_id %in% low & surgery_number==1&type_surgery==2)$record_id))
+
+### For high grade reflux non-primary TUI patients
+# How many never had any surgery 
+length(unique(filter(u,record_id %in% high & EverSurg=="N")$record_id))
+
+# How many had first surgery type_surgery == 2
+length(unique(filter(u,record_id %in% high & surgery_number==1&type_surgery==2)$record_id))
+
 ```
 
 ```{r Surgery type}
@@ -238,13 +820,24 @@ df <- data.frame("needed extra surg" = c(nrow(type1hadmultisurg), nrow(nottype1h
 df
 fisher.test(df,alternative="greater") # was this enriched relative to expected
 
+# Make snakey of surg types and success
+snk <- filter(u,MainRow=="Y") %>% select(record_id,EverSurg)
+temp <- filter(u,surgery_number=="1") %>% select(record_id,type_surgery)
+temp$extra_surg <- ifelse(temp$record_id %in% unique(filter(u,surgery_number=="2")$record_id),"Y","N")
+snk <- left_join(snk,temp,by=c("record_id")) %>% select(-record_id)
+snk <- snk %>% group_by_all %>% count %>% rename(freq=n)
+
+png(file="sankey_surg_overview.png")
+SankeyDiagram(snk %>% select(-freq),link.color = "Source",weights = snk$freq) 
+dev.off()
+
 ```
 
 ```{r UTI timing relative to surg}
 # Of the patients who had a UTI and underwent a surgery, how many had their first UTI before surgery and how many after?
 surg_ppl <- unique(filter(u,EverSurg=="Y")$record_id)
 
-# BEFORE
+# FIRST BEFORE
 tempsurg <- u %>% filter(!is.na(surgery_date)) %>% arrange(record_id,surgery_date) %>% group_by(record_id) %>% filter(row_number()==1) %>% select(record_id,surgery_date)  # earliest surg
 tempfu <- u %>% filter(febrile_uti=="1"|uti=="1") %>% arrange(record_id,follow_up_date) %>% group_by(record_id) %>% filter(row_number()==1) %>% select(record_id,follow_up_date)  # earliest followup w uti
 temp <- right_join(tempsurg,tempfu,by=c("record_id"))
@@ -252,7 +845,7 @@ crit3ppl <- unique(filter(temp,follow_up_date<surgery_date)$record_id)
 before <- filter(u, record_id %in% surg_ppl & (diagnosis_reason___2=="1" | reason_imm_surgery___4=="1" | record_id %in% crit3ppl))
 length(unique(before$record_id)) # num people before
 
-# AFTER
+# FIRST AFTER
 ever_uti_surg <- unique(filter(u, record_id %in% surg_ppl & (diagnosis_reason___2=="1" | reason_imm_surgery___4=="1" | uti=="1" | febrile_uti=="1" | post_op_uti=="1" | repeat_surg_indication=="1" | reason_surgery___4 == "1"))$record_id)
 aftersurg <- unique(setdiff(ever_uti_surg,unique(before$record_id)))
 length(aftersurg) # had uti after surg
@@ -260,6 +853,16 @@ length(aftersurg) # had uti after surg
 u_full <- u %>% mutate(firstUTIbeforesurg=ifelse(record_id %in% unique(before$record_id),"Y","N"))
 u_full <- u_full %>% mutate(firstUTIaftersurg=ifelse(record_id %in% aftersurg,"Y","N"))
 u_full <- u_full %>% mutate(EverUTI=ifelse(record_id %in% ever_uti_surg,"Y","N"))
+
+# For primary TUI specifically
+nrow(filter(u_full,firstUTIaftersurg=="Y"&surg1type1=="Y"&MainRow=="Y")) # number first UTI after surg
+nrow(filter(u_full,EverUTI=="Y"&surg1type1=="Y"&MainRow=="Y")) # number ever UTI
+nrow(filter(u_full,firstUTIbeforesurg=="Y"&surg1type1=="Y"&MainRow=="Y")) # number first UTI before surg
+bu <- filter(u_full,firstUTIbeforesurg=="Y"&surg1type1=="Y"&MainRow=="Y")$record_id # how many who had first UTI before surg also had one after
+bua <- unique(filter(u, record_id %in% bu & follow_up_date>first_surgery_date & (diagnosis_reason___2=="1" | reason_imm_surgery___4=="1" | uti=="1" | febrile_uti=="1" | post_op_uti=="1" | repeat_surg_indication=="1" | reason_surgery___4 == "1"))$record_id) # how many who had first UTI before surg also had one after
+bua2 <- unique(filter(u, record_id %in% bu & uti_after_surg=="Y")$record_id) # checking again another way (how many who had first UTI before surg also had one after)
+length(bua)
+length(bua2)
 
 ```
 
@@ -380,7 +983,7 @@ t.test(filter(temp,firstUTIaftersurg=="Y")$daytofirstsurg, filter(temp,firstUTIa
 ```
 
 ```{r Reflux Outcomes}
-newrefluxppl <- filter(u,MainRow=="Y"&prereflux=="N"&postreflux=="Y")$record_id
+newrefluxppl <- filter(u,MainRow=="Y"&prereflux=="N"&postreflux90=="Y")$record_id
 
 # For patients who underwent surgery, was a prenatal diagnosis more likely than diagnosis at a later date to develop NEW reflux within 3 months after surgery
 notprenat <- data.frame(record_id=unique(filter(u,PrenatDiagnosis=="N")$record_id))
@@ -393,10 +996,11 @@ df
 fisher.test(df) # was this enriched relative to expected
 
 # Is a greater time difference between diagnosis and first surgery significantly related to developing NEW reflux within 3 months after surgery
-temp <- filter(u,MainRow=="Y") %>% mutate(Reflux=paste0("pre:",prereflux,"_post:",postreflux))
+temp <- filter(u,MainRow=="Y") %>% mutate(Reflux=paste0("pre:",prereflux,"_post:",postreflux90))
 ggplot(temp,aes(x=Reflux,y=daytofirstsurg))+geom_violin(trim=FALSE,aes(fill=Reflux))+
   labs(x="Reflux?",y="Days To First Surgery From Diagnosis")+
-  scale_fill_manual(values=c("purple", "#E69F00", "blue"))+geom_boxplot(width=0.1)+theme_classic()
+  #scale_fill_manual(values=c("purple", "#E69F00", "blue"))+
+  geom_boxplot(width=0.1)+theme_classic()
 ggsave("C:/Users/Courtney/Desktop/UreteroOutcomes/reflux_timetosurg.png")
 
 t.test(filter(temp,Reflux=="pre:N_post:Y")$daytofirstsurg, filter(temp,Reflux=="pre:N_post:N")$daytofirstsurg, var.equal = TRUE) # need to confirm assumptions for this t test anyway

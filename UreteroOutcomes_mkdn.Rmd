@@ -550,6 +550,13 @@ quantizeVariable <- function(x, max.categories, breaks = NULL)
 }
 ```
 
+
+```{r Demographic breakdown}
+# Number of boys and girls
+filter(u,MainRow=="Y") %>% group_by(sex) %>% count()
+
+```
+
 ```{r primary TUI surgery dates}
 temp <- filter(u,surg1type1=="Y"&MainRow=="Y")
 ggplot(temp,aes(ymd(first_surgery_date)))+geom_histogram(color="black",binwidth=365.25)+ # binned to bars of 1 year widths
@@ -719,32 +726,84 @@ temp <- filter(u,surg1type1=="Y" & ((as.numeric(ymd(first_surgery_date)-ymd(date
 t1 <- temp %>% filter(!is.na(fu_rbus_date)&follow_up_hydro_cele<5&follow_up_hydro_cele_2<5) %>% group_by(record_id) %>% arrange(desc(fu_rbus_date)) %>% filter(1:n() == 1) %>% select(-date_initial_rbus,-baseline_hydro_ureterocele,-other_moiety_hydro)# for everyone w/fu_rbus_date w/in 7 days of first surg, get latest date for each person
 t2 <- temp %>% filter(!is.na(date_initial_rbus)&baseline_hydro_ureterocele<5&other_moiety_hydro<5) %>% group_by(record_id) %>% arrange(desc(date_initial_rbus)) %>% filter(1:n() == 1) %>% select(-fu_rbus_date,-follow_up_hydro_cele,-follow_up_hydro_cele_2)# for everyone w/date_initial_rbus w/in 7 days of first surg, get latest date for each person
 t <- full_join(t1,t2,by=c("first_surgery_date", "record_id")) # combine
-t <- t %>% mutate(total_rbus=ifelse(is.na(fu_rbus_date),sum(baseline_hydro_ureterocele,other_moiety_hydro,na.rm=TRUE),sum(follow_up_hydro_cele,follow_up_hydro_cele_2,na.rm=TRUE)))%>% select(date_initial_rbus,fu_rbus_date,first_surgery_date,baseline_hydro_ureterocele,other_moiety_hydro,follow_up_hydro_cele,follow_up_hydro_cele_2,record_id,total_rbus)
+t <- t %>% mutate(total_rbus=ifelse(is.na(fu_rbus_date),baseline_hydro_ureterocele,follow_up_hydro_cele))%>% select(date_initial_rbus,fu_rbus_date,first_surgery_date,baseline_hydro_ureterocele,other_moiety_hydro,follow_up_hydro_cele,follow_up_hydro_cele_2,record_id,total_rbus)
 multisurg <- unique(filter(u,surg1type1=="Y"&surgery_number=="2")$record_id)
 t <- right_join(u %>% filter(MainRow=="Y"&surg1type1=="Y") %>% mutate(MultiSurg=ifelse(record_id %in% multisurg,"Yes","No")) %>% select(record_id,MultiSurg),t %>% select(record_id,total_rbus))
-t.test(filter(t,MultiSurg=="No")$total_rbus,filter(t,MultiSurg=="Yes")$total_rbus)
+t$total_rbus <- as.factor(t$total_rbus)
+t$MultiSurg <- as.factor(t$MultiSurg)
+summary(glm(MultiSurg ~ total_rbus, data = t, family = "binomial"(link='logit')))
+#summary(glm(MultiSurg ~ relevel(factor(total_rbus),ref='2'), data = t, family = "binomial"(link='logit')))
+#summary(glm(MultiSurg ~ relevel(factor(total_rbus),ref='3'), data = t, family = "binomial"(link='logit')))
+#summary(glm(MultiSurg ~ relevel(factor(total_rbus),ref='4'), data = t, family = "binomial"(link='logit')))
+
 
 # Compare mean total rbus score within x days before surgery for multisurg type1surg1 vs nonmultisurg type1surg1
 temp <- filter(u,surg1type1=="Y" & ((as.numeric(ymd(first_surgery_date)-ymd(date_initial_rbus))<=30 & as.numeric(ymd(first_surgery_date)-ymd(date_initial_rbus))>0)| (as.numeric(ymd(first_surgery_date)-ymd(fu_rbus_date))<=30 & as.numeric(ymd(first_surgery_date)-ymd(fu_rbus_date))>0)))%>% select(date_initial_rbus,fu_rbus_date,first_surgery_date,baseline_hydro_ureterocele,other_moiety_hydro,follow_up_hydro_cele,follow_up_hydro_cele_2,record_id)
 t1 <- temp %>% filter(!is.na(fu_rbus_date)&follow_up_hydro_cele<5&follow_up_hydro_cele_2<5) %>% group_by(record_id) %>% arrange(desc(fu_rbus_date)) %>% filter(1:n() == 1) %>% select(-date_initial_rbus,-baseline_hydro_ureterocele,-other_moiety_hydro)# for everyone w/fu_rbus_date w/in 30 days of first surg, get latest date for each person
 t2 <- temp %>% filter(!is.na(date_initial_rbus)&baseline_hydro_ureterocele<5&other_moiety_hydro<5) %>% group_by(record_id) %>% arrange(desc(date_initial_rbus)) %>% filter(1:n() == 1) %>% select(-fu_rbus_date,-follow_up_hydro_cele,-follow_up_hydro_cele_2)# for everyone w/date_initial_rbus w/in 30 days of first surg, get latest date for each person
 t <- full_join(t1,t2,by=c("first_surgery_date", "record_id")) # combine
-t <- t %>% mutate(total_rbus=ifelse(is.na(fu_rbus_date),sum(baseline_hydro_ureterocele,other_moiety_hydro,na.rm=TRUE),sum(follow_up_hydro_cele,follow_up_hydro_cele_2,na.rm=TRUE)))%>% select(date_initial_rbus,fu_rbus_date,first_surgery_date,baseline_hydro_ureterocele,other_moiety_hydro,follow_up_hydro_cele,follow_up_hydro_cele_2,record_id,total_rbus)
+t <- t %>% mutate(total_rbus=ifelse(is.na(fu_rbus_date),baseline_hydro_ureterocele,follow_up_hydro_cele))%>% select(date_initial_rbus,fu_rbus_date,first_surgery_date,baseline_hydro_ureterocele,other_moiety_hydro,follow_up_hydro_cele,follow_up_hydro_cele_2,record_id,total_rbus)
 multisurg <- unique(filter(u,surg1type1=="Y"&surgery_number=="2")$record_id)
 t <- right_join(u %>% filter(MainRow=="Y"&surg1type1=="Y") %>% mutate(MultiSurg=ifelse(record_id %in% multisurg,"Yes","No")) %>% select(record_id,MultiSurg),t %>% select(record_id,total_rbus))
-t.test(filter(t,MultiSurg=="No")$total_rbus,filter(t,MultiSurg=="Yes")$total_rbus)
+t$total_rbus <- as.factor(t$total_rbus)
+t$MultiSurg <- as.factor(t$MultiSurg)
+summary(glm(MultiSurg ~ total_rbus, data = t, family = "binomial"(link='logit')))
+summary(t$total_rbus)
+exp(coef(glm(MultiSurg ~ total_rbus, data = t, family = "binomial"(link='logit')))) # odds ratio = e^estimate
+exp(confint(glm(MultiSurg ~ total_rbus, data = t, family = "binomial"(link='logit')))) 
+
+#summary(glm(MultiSurg ~ relevel(factor(total_rbus),ref='2'), data = t, family = "binomial"(link='logit')))
+#summary(glm(MultiSurg ~ relevel(factor(total_rbus),ref='3'), data = t, family = "binomial"(link='logit')))
+#summary(glm(MultiSurg ~ relevel(factor(total_rbus),ref='4'), data = t, family = "binomial"(link='logit')))
+
 
 # Compare mean total rbus score within x days before surgery for multisurg type1surg1 vs nonmultisurg type1surg1
 temp <- filter(u,surg1type1=="Y" & ((as.numeric(ymd(first_surgery_date)-ymd(date_initial_rbus))<=90 & as.numeric(ymd(first_surgery_date)-ymd(date_initial_rbus))>0)| (as.numeric(ymd(first_surgery_date)-ymd(fu_rbus_date))<=90 & as.numeric(ymd(first_surgery_date)-ymd(fu_rbus_date))>0)))%>% select(date_initial_rbus,fu_rbus_date,first_surgery_date,baseline_hydro_ureterocele,other_moiety_hydro,follow_up_hydro_cele,follow_up_hydro_cele_2,record_id)
 t1 <- temp %>% filter(!is.na(fu_rbus_date)&follow_up_hydro_cele<5&follow_up_hydro_cele_2<5) %>% group_by(record_id) %>% arrange(desc(fu_rbus_date)) %>% filter(1:n() == 1) %>% select(-date_initial_rbus,-baseline_hydro_ureterocele,-other_moiety_hydro)# for everyone w/fu_rbus_date w/in 90 days of first surg, get latest date for each person
 t2 <- temp %>% filter(!is.na(date_initial_rbus)&baseline_hydro_ureterocele<5&other_moiety_hydro<5) %>% group_by(record_id) %>% arrange(desc(date_initial_rbus)) %>% filter(1:n() == 1) %>% select(-fu_rbus_date,-follow_up_hydro_cele,-follow_up_hydro_cele_2)# for everyone w/date_initial_rbus w/in 90 days of first surg, get latest date for each person
 t <- full_join(t1,t2,by=c("first_surgery_date", "record_id")) # combine
-t <- t %>% mutate(total_rbus=ifelse(is.na(fu_rbus_date),sum(baseline_hydro_ureterocele,other_moiety_hydro,na.rm=TRUE),sum(follow_up_hydro_cele,follow_up_hydro_cele_2,na.rm=TRUE)))%>% select(date_initial_rbus,fu_rbus_date,first_surgery_date,baseline_hydro_ureterocele,other_moiety_hydro,follow_up_hydro_cele,follow_up_hydro_cele_2,record_id,total_rbus)
+t <- t %>% mutate(total_rbus=ifelse(is.na(fu_rbus_date),baseline_hydro_ureterocele,follow_up_hydro_cele))%>% select(date_initial_rbus,fu_rbus_date,first_surgery_date,baseline_hydro_ureterocele,other_moiety_hydro,follow_up_hydro_cele,follow_up_hydro_cele_2,record_id,total_rbus)
 multisurg <- unique(filter(u,surg1type1=="Y"&surgery_number=="2")$record_id)
 t <- right_join(u %>% filter(MainRow=="Y"&surg1type1=="Y") %>% mutate(MultiSurg=ifelse(record_id %in% multisurg,"Yes","No")) %>% select(record_id,MultiSurg),t %>% select(record_id,total_rbus))
-t.test(filter(t,MultiSurg=="No")$total_rbus,filter(t,MultiSurg=="Yes")$total_rbus)
+t$total_rbus <- as.factor(t$total_rbus)
+t$MultiSurg <- as.factor(t$MultiSurg)
+summary(glm(MultiSurg ~ total_rbus, data = t, family = "binomial"(link='logit')))
+summary(t$total_rbus)
+exp(coef(glm(MultiSurg ~ total_rbus, data = t, family = "binomial"(link='logit')))) # odds ratio = e^estimate
+exp(confint(glm(MultiSurg ~ total_rbus, data = t, family = "binomial"(link='logit')))) 
+
+#summary(glm(MultiSurg ~ relevel(factor(total_rbus),ref='2'), data = t, family = "binomial"(link='logit')))
+#summary(glm(MultiSurg ~ relevel(factor(total_rbus),ref='3'), data = t, family = "binomial"(link='logit')))
+#summary(glm(MultiSurg ~ relevel(factor(total_rbus),ref='4'), data = t, family = "binomial"(link='logit')))
 
 
+
+```
+
+```{r De novo reflux}
+# How many had de novo reflux after primary TUI
+k <- s %>% filter(postreflux=="Y"&prereflux=="N")
+nrow(k) # how many ONLY postop reflux (not prereflux too)
+
+# of the 18 who had de novo reflux, ow many had ureterocele_pole == 1 (upper pole) vs == 2 (simplex)
+nrow(filter(k,ureterocele_pole == 1)) # simplex
+nrow(filter(k,ureterocele_pole == 2)) # upper pole
+
+# for the 18 de novo reflux people with simplex ureteroceles, how many had vur_fu > 0 vs how many had contra_reflux > 0
+p <- unique(filter(k,ureterocele_pole == 1)$record_id)
+length(unique(filter(u,record_id %in% p & (vur_fu > 0 & vur_fu <6))$record_id))
+length(unique(filter(u,record_id %in% p & (contra_reflux > 0 & contra_reflux<6))$record_id))
+
+# for the 18 de novo reflux people with upper pole ureteroceles, how many have vur_fu > 0 vs how many have vur_fu_2 > 0 vs how many have contra_reflux > 0
+p <- unique(filter(k,ureterocele_pole == 2)$record_id)
+length(unique(filter(u,record_id %in% p & (vur_fu > 0 & vur_fu<6))$record_id)) # upper
+length(unique(filter(u,record_id %in% p & (vur_fu_2 > 0 & vur_fu_2<6))$record_id)) # lower
+length(unique(filter(u,record_id %in% p & (contra_reflux > 0 & contra_reflux<6))$record_id)) # contra
+length(unique(c(unique(filter(u,record_id %in% p & (vur_fu > 0 & vur_fu<6))$record_id),unique(filter(u,record_id %in% p & (vur_fu_2 > 0 & vur_fu_2<6))$record_id),unique(filter(u,record_id %in% p & (contra_reflux > 0 & contra_reflux<6))$record_id))))
+
+length(intersect(unique(filter(u,record_id %in% p & (vur_fu > 0 & vur_fu<6))$record_id),unique(filter(u,record_id %in% p & (vur_fu_2 > 0 & vur_fu_2<6))$record_id))) # upper and lower
+length(intersect(unique(filter(u,record_id %in% p & (contra_reflux > 0 & contra_reflux<6))$record_id),unique(filter(u,record_id %in% p & (vur_fu_2 > 0 & vur_fu_2<6))$record_id))) # lower and contra
+length(intersect(unique(filter(u,record_id %in% p & (contra_reflux > 0 & contra_reflux<6))$record_id),unique(filter(u,record_id %in% p & ( (vur_fu > 0 & vur_fu<6)))$record_id))) # upper and contra
 ```
 
 ```{r Non-primary TUI patients}
